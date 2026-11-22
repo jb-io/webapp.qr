@@ -1,0 +1,58 @@
+{
+  "name": "webapp.qr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Privacy-friendly QR code scanner and generator - runs entirely in the browser, no external requests",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "icons": "node scripts/icons.mjs",
+    "test:e2e": "playwright test",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zxing-wasm": "^3.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "playwright": "^1.65.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "keywords": [
+    "qr-code",
+    "qr-scanner",
+    "qr-generator",
+    "barcode",
+    "pwa",
+    "privacy",
+    "offline",
+    "share-target",
+    "girocode",
+    "vcard",
+    "react",
+    "typescript",
+    "vite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jb-io/webapp.qr.git"
+  },
+  "homepage": "https://jb-io.github.io/webapp.qr/"
+}

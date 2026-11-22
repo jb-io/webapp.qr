@@ -1,0 +1,261 @@
+/**
+ * Generator: content form, design options, live preview, independent
+ * verification and export. The draft lives in the store so it survives
+ * switching tabs; it is only written to the history on an explicit action
+ * (save, export, share, fullscreen) - never per keystroke.
+ */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { analyze, type Analysis } from '../../core/analysis.ts';
+import { CapacityError, createMatrix } from '../../core/matrix.ts';
+import { buildPayload, emptyContent, requiredEcLevel, validateContent } from '../../core/payloads.ts';
+import { renderSvg } from '../../core/render.ts';
+import { CREATE_TYPES, type CreateContent, type CreateType, type QrMatrix } from '../../core/types.ts';
+import { ContentForm } from '../components/ContentForm.tsx';
+import { FullscreenQr } from '../components/FullscreenQr.tsx';
+import { Icon, TYPE_ICONS } from '../components/Icon.tsx';
+import { StylePanel } from '../components/StylePanel.tsx';
+import { Note, Select } from '../components/ui.tsx';
+import { VerifyPanel } from '../components/VerifyPanel.tsx';
+import { useI18n, type Key } from '../i18n/index.tsx';
+import { useStore } from '../state/Store.tsx';
+import {
+  canCopyImage, canShareFiles, copyImage, downloadBlob, EXPORT_FORMATS, exportBlob, fileName, share, svgDataUrl,
+  type ExportFormat,
+} from '../lib/export.ts';
+
+interface Ready { matrix: QrMatrix; svg: string; aspect: number; analysis: Analysis }
+
+const SIZES = [256, 512, 1024, 2048, 4096];
+const PRINT_MM = [20, 30, 50, 80, 100, 150];
+
+/** Short human summary for alt texts and history. */
+export function summarize(c: CreateContent): string {
+  switch (c.type) {
+    case 'text': return c.text.slice(0, 80);
+    case 'url': return c.url;
+    case 'wifi': return c.ssid;
+    case 'contact': return [c.firstName, c.lastName].filter(Boolean).join(' ') || c.organization;
+    case 'email': return c.to;
+    case 'sms':
+    case 'phone': return c.number;
+    case 'geo': return c.label || `${c.latitude}, ${c.longitude}`;
+    case 'event': return c.title;
+    case 'epc': return `${c.name}${c.amount ? ` · ${c.amount} €` : ''}`;
+  }
+}
+
+export function CreatePage() {
+  const { t } = useI18n();
+  const { draft, setDraft, recordCreated, notify } = useStore();
+  const { content, style, options } = draft;
+  const [touched, setTouched] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [format, setFormat] = useState<ExportFormat>('png');
+  const [size, setSize] = useState(1024);
+  const [printMm, setPrintMm] = useState(50);
+  const [busy, setBusy] = useState(false);
+  const formRef = useRef<HTMLDivElement>(null);
+  const [originHint, setOriginHint] = useState(draft.origin);
+
+  // A draft replaced from outside (share, scan, history): show the hint and focus the form.
+  useEffect(() => {
+    if (draft.stamp === 0) return;
+    setOriginHint(draft.origin);
+    setTouched(true);
+    formRef.current?.querySelector<HTMLElement>('input, textarea, select')?.focus();
+  }, [draft.stamp, draft.origin]);
+
+  const errors = useMemo(() => validateContent(content), [content]);
+  const payload = useMemo(() => (errors.length ? '' : buildPayload(content)), [content, errors]);
+  const effectiveOptions = useMemo(() => {
+    const forced = requiredEcLevel(content.type);
+    return forced ? { ...options, ecLevel: forced } : options;
+  }, [content.type, options]);
+
+  const qr = useMemo((): Ready | { error: string } | null => {
+    if (!payload) return null;
+    try {
+      const matrix = createMatrix(payload, effectiveOptions);
+      const preview = renderSvg(matrix, style);
+      const analysis = analyze(matrix, style, size);
+      const aspect = preview.layout.height / preview.layout.width;
+      return { matrix, svg: preview.svg, aspect, analysis };
+    } catch (error) {
+      return { error: error instanceof CapacityError ? 'capacity' : String(error) };
+    }
+  }, [payload, effectiveOptions, style, size]);
+
+  const ready = qr && !('error' in qr) ? qr : null;
+  const summary = summarize(content);
+
+  const changeType = (type: CreateType) => {
+    if (type === content.type) return;
+    setTouched(false);
+    setOriginHint(null);
+    setDraft({ content: emptyContent(type) });
+  };
+
+  const remember = (explicit: boolean) => {
+    if (!ready) return;
+    recordCreated({ content, style, options: effectiveOptions, payload }, explicit);
+  };
+
+  const exportFile = async (f: ExportFormat) => {
+    if (!ready) return null;
+    const blob = await exportBlob(ready.svg, { format: f, width: size, printMm, aspect: ready.aspect, title: summary });
+    return new File([blob], fileName(content.type, f), { type: blob.type });
+  };
+
+  const onDownload = async () => {
+    setBusy(true);
+    try {
+      const file = await exportFile(format);
+      if (file) {
+        downloadBlob(file, file.name);
+        remember(false);
+      }
+    } catch (error) {
+      notify('common.error', 'error', { message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onShare = async () => {
+    setBusy(true);
+    try {
+      const file = await exportFile('png');
+      if (file && (await share({ file, title: t('create.shareText'), text: payload }))) remember(false);
+    } catch (error) {
+      notify('common.error', 'error', { message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCopyImage = async () => {
+    if (!ready) return;
+    try {
+      await copyImage(exportBlob(ready.svg, { format: 'png', width: size, printMm, aspect: ready.aspect, title: summary }));
+      notify('common.copied');
+      remember(false);
+    } catch {
+      notify('common.copyFailed', 'error');
+    }
+  };
+
+  const hintKey: Record<string, Key> = { share: 'create.fromShare', scan: 'create.fromScan', history: 'create.fromHistory' };
+
+  return (
+    <>
+      <div className="page-head">
+        <h1>{t('create.title')}</h1>
+      </div>
+
+      <div className="create-layout">
+        <div className="create-main">
+          <section className="card order-content" aria-labelledby="content-title">
+            <h2 id="content-title" className="visually-hidden">{t('create.content')}</h2>
+            <fieldset className="types">
+              <legend className="visually-hidden">{t('create.type')}</legend>
+              {CREATE_TYPES.map((type) => (
+                <label key={type}>
+                  <input type="radio" name="qr-type" value={type} checked={content.type === type} onChange={() => changeType(type)} />
+                  <span>
+                    <Icon name={TYPE_ICONS[type] ?? 'text'} size={22} />
+                    {t(`type.${type}` as Key)}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <div style={{ marginTop: 16 }} className="stack" ref={formRef} onBlur={() => setTouched(true)}>
+              {originHint && hintKey[originHint] && <Note tone="info">{t(hintKey[originHint])}</Note>}
+              <ContentForm content={content} onChange={(c) => setDraft({ content: c })} errors={errors} showErrors={touched} />
+            </div>
+          </section>
+
+          <section className="card order-design" aria-labelledby="design-title">
+            <h2 id="design-title" style={{ marginBottom: 4 }}>{t('create.design')}</h2>
+            <StylePanel
+              style={style}
+              options={options}
+              type={content.type}
+              onStyle={(patch) => setDraft({ style: { ...style, ...patch } })}
+              onOptions={(patch) => setDraft({ options: { ...options, ...patch } })}
+            />
+          </section>
+        </div>
+
+        <div className="create-side">
+          <section className="card order-preview" aria-labelledby="preview-title">
+            <h2 id="preview-title" className="visually-hidden">{t('create.preview')}</h2>
+            <div className="preview">
+              {ready ? (
+                <img src={svgDataUrl(ready.svg)} alt={t('create.previewAlt', { summary })} />
+              ) : (
+                <p className="empty">{qr && 'error' in qr && qr.error === 'capacity' ? t('error.capacity') : t('create.empty')}</p>
+              )}
+            </div>
+
+            <div className="preview-actions">
+              <button type="button" className="btn btn-primary wide" disabled={!ready} onClick={() => { setFullscreen(true); remember(false); }}>
+                <Icon name="expand" size={18} />
+                {t('create.fullscreen')}
+              </button>
+              {canShareFiles() && (
+                <button type="button" className="btn" disabled={!ready || busy} onClick={onShare}>
+                  <Icon name="share" size={18} />
+                  {t('common.share')}
+                </button>
+              )}
+              {canCopyImage() && (
+                <button type="button" className="btn" disabled={!ready} onClick={onCopyImage}>
+                  <Icon name="copy" size={18} />
+                  {t('create.copyImage')}
+                </button>
+              )}
+              <button type="button" className="btn" disabled={!ready} onClick={() => remember(true)}>
+                <Icon name="save" size={18} />
+                {t('create.save')}
+              </button>
+            </div>
+
+            <div className="export-row">
+              <Select<ExportFormat>
+                label={t('create.exportFormat')}
+                value={format}
+                onChange={setFormat}
+                options={EXPORT_FORMATS.map((f) => ({ value: f, label: f.toUpperCase() }))}
+              />
+              {format === 'pdf' ? (
+                <Select label={t('create.exportPrint')} value={printMm} onChange={setPrintMm} options={PRINT_MM.map((v) => ({ value: v, label: `${v / 10} cm` }))} />
+              ) : (
+                <Select
+                  label={t('create.exportSize')}
+                  value={size}
+                  onChange={setSize}
+                  options={SIZES.map((v) => ({ value: v, label: `${v} × ${v} px` }))}
+                />
+              )}
+              <button type="button" className="btn btn-block wide" style={{ gridColumn: '1 / -1' }} disabled={!ready || busy} onClick={onDownload}>
+                <Icon name="download" size={18} />
+                {t('create.download')} ({format.toUpperCase()})
+              </button>
+            </div>
+
+            {ready && (
+              <details className="raw">
+                <summary>{t('create.payload')}</summary>
+                <pre className="payload">{content.type === 'wifi' ? payload.replace(/P:(?:\\.|[^;])*/, 'P:••••') : payload}</pre>
+              </details>
+            )}
+          </section>
+
+          {ready && <VerifyPanel svg={ready.svg} aspect={ready.aspect} payload={payload} matrix={ready.matrix} analysis={ready.analysis} />}
+        </div>
+      </div>
+
+      {ready && <FullscreenQr svg={ready.svg} alt={t('create.previewAlt', { summary })} open={fullscreen} onClose={() => setFullscreen(false)} />}
+    </>
+  );
+}
