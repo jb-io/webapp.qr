@@ -55,11 +55,13 @@ export async function wipeEverything(): Promise<void> {
   }
   if ('caches' in window) {
     const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k.startsWith('qr-lokal')).map((k) => caches.delete(k)));
+    await Promise.all(keys.filter((k) => k.startsWith('qr-lokal-')).map((k) => caches.delete(k)));
   }
+  // The origin (jb-io.github.io) is shared with other projects: only touch our own scope.
   if ('serviceWorker' in navigator) {
+    const scope = new URL('./', window.location.href).href;
     const regs = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(regs.map((r) => r.unregister()));
+    await Promise.all(regs.filter((r) => r.scope === scope).map((r) => r.unregister()));
   }
 }
 

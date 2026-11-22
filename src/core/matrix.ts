@@ -57,6 +57,7 @@ export function createMatrix(payload: string, options: MatrixOptions): QrMatrix 
     ecLevel: level,
     mask: qr.maskPattern ?? -1,
     dark: Uint8Array.from(qr.modules.data),
+    reserved: Uint8Array.from((qr.modules as unknown as { reservedBit: Uint8Array }).reservedBit),
     segments,
     usedDataBits,
     capacityDataBits: (totalCodewords - ecCodewords) * 8,

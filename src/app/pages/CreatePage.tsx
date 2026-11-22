@@ -1,34 +1,32 @@
 /**
- * Generator: content form, design options, live preview, independent
- * verification and export. The draft lives in the store so it survives
- * switching tabs; it is only written to the history on an explicit action
- * (save, export, share, fullscreen) - never per keystroke.
+ * Generator: content form, live preview with export, independent
+ * verification and design options. The draft lives in the store so it
+ * survives switching tabs; it is only written to the history on an explicit
+ * action (save, export, share, copy, fullscreen) - never per keystroke.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { analyze, type Analysis } from '../../core/analysis.ts';
+import { analyze } from '../../core/analysis.ts';
 import { CapacityError, createMatrix } from '../../core/matrix.ts';
 import { buildPayload, emptyContent, requiredEcLevel, validateContent } from '../../core/payloads.ts';
 import { renderSvg } from '../../core/render.ts';
-import { CREATE_TYPES, type CreateContent, type CreateType, type QrMatrix } from '../../core/types.ts';
+import { CREATE_TYPES, type CreateContent, type CreateType } from '../../core/types.ts';
 import { ContentForm } from '../components/ContentForm.tsx';
 import { FullscreenQr } from '../components/FullscreenQr.tsx';
 import { Icon, TYPE_ICONS } from '../components/Icon.tsx';
 import { StylePanel } from '../components/StylePanel.tsx';
 import { Note, Select } from '../components/ui.tsx';
 import { VerifyPanel } from '../components/VerifyPanel.tsx';
-import { useI18n, type Key } from '../i18n/index.tsx';
-import { useStore } from '../state/Store.tsx';
+import { useI18n } from '../i18n/index.tsx';
+import { useStore, useToasts, type Draft } from '../state/Store.tsx';
 import {
   canCopyImage, canShareFiles, copyImage, downloadBlob, EXPORT_FORMATS, exportBlob, fileName, share, svgDataUrl,
   type ExportFormat,
 } from '../lib/export.ts';
 
-interface Ready { matrix: QrMatrix; svg: string; aspect: number; analysis: Analysis }
-
 const SIZES = [256, 512, 1024, 2048, 4096];
 const PRINT_MM = [20, 30, 50, 80, 100, 150];
 
-/** Short human summary for alt texts and history. */
+/** Short human summary for alt texts and history. Never contains secrets. */
 export function summarize(c: CreateContent): string {
   switch (c.type) {
     case 'text': return c.text.slice(0, 80);
@@ -46,24 +44,33 @@ export function summarize(c: CreateContent): string {
 
 export function CreatePage() {
   const { t } = useI18n();
-  const { draft, setDraft, recordCreated, notify } = useStore();
+  const { draft, setDraft, recordCreated } = useStore();
+  const { notify } = useToasts();
   const { content, style, options } = draft;
-  const [touched, setTouched] = useState(false);
+  const [touched, setTouched] = useState<Set<string>>(() => new Set());
+  const [hint, setHint] = useState<Draft['origin']>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [format, setFormat] = useState<ExportFormat>('png');
   const [size, setSize] = useState(1024);
   const [printMm, setPrintMm] = useState(50);
   const [busy, setBusy] = useState(false);
-  const formRef = useRef<HTMLDivElement>(null);
-  const [originHint, setOriginHint] = useState(draft.origin);
+  const hintRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLElement>(null);
+  /** Input per type, so that switching types never throws work away. */
+  const byType = useRef(new Map<CreateType, CreateContent>());
 
-  // A draft replaced from outside (share, scan, history): show the hint and focus the form.
+  // A draft prefilled from outside (share, scan, history): show the hint once,
+  // focus it (not an input - no keyboard covering the code) and reveal the preview.
   useEffect(() => {
-    if (draft.stamp === 0) return;
-    setOriginHint(draft.origin);
-    setTouched(true);
-    formRef.current?.querySelector<HTMLElement>('input, textarea, select')?.focus();
-  }, [draft.stamp, draft.origin]);
+    if (!draft.origin) return;
+    setHint(draft.origin);
+    setDraft({ origin: null });
+    byType.current.clear();
+    requestAnimationFrame(() => {
+      hintRef.current?.focus({ preventScroll: true });
+      previewRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+  }, [draft.origin, setDraft]);
 
   const errors = useMemo(() => validateContent(content), [content]);
   const payload = useMemo(() => (errors.length ? '' : buildPayload(content)), [content, errors]);
@@ -72,27 +79,27 @@ export function CreatePage() {
     return forced ? { ...options, ecLevel: forced } : options;
   }, [content.type, options]);
 
-  const qr = useMemo((): Ready | { error: string } | null => {
+  const rendered = useMemo(() => {
     if (!payload) return null;
     try {
       const matrix = createMatrix(payload, effectiveOptions);
-      const preview = renderSvg(matrix, style);
-      const analysis = analyze(matrix, style, size);
-      const aspect = preview.layout.height / preview.layout.width;
-      return { matrix, svg: preview.svg, aspect, analysis };
+      const { svg, layout } = renderSvg(matrix, style);
+      return { matrix, svg, aspect: layout.height / layout.width, src: svgDataUrl(svg) };
     } catch (error) {
       return { error: error instanceof CapacityError ? 'capacity' : String(error) };
     }
-  }, [payload, effectiveOptions, style, size]);
+  }, [payload, effectiveOptions, style]);
 
-  const ready = qr && !('error' in qr) ? qr : null;
+  const ready = rendered && !('error' in rendered) ? rendered : null;
+  const analysis = useMemo(() => (ready ? analyze(ready.matrix, style, size) : null), [ready, style, size]);
   const summary = summarize(content);
 
   const changeType = (type: CreateType) => {
     if (type === content.type) return;
-    setTouched(false);
-    setOriginHint(null);
-    setDraft({ content: emptyContent(type) });
+    byType.current.set(content.type, content);
+    setTouched(new Set());
+    setHint(null);
+    setDraft({ content: byType.current.get(type) ?? emptyContent(type) });
   };
 
   const remember = (explicit: boolean) => {
@@ -100,11 +107,14 @@ export function CreatePage() {
     recordCreated({ content, style, options: effectiveOptions, payload }, explicit);
   };
 
+  // No content in document metadata: a PDF should not reveal more than the code.
   const exportFile = async (f: ExportFormat) => {
     if (!ready) return null;
-    const blob = await exportBlob(ready.svg, { format: f, width: size, printMm, aspect: ready.aspect, title: summary });
+    const blob = await exportBlob(ready.svg, { format: f, width: size, printMm, aspect: ready.aspect, title: t('create.shareText') });
     return new File([blob], fileName(content.type, f), { type: blob.type });
   };
+
+  const fail = (error: unknown) => notify('common.error', 'error', { message: error instanceof Error ? error.message : String(error) });
 
   const onDownload = async () => {
     setBusy(true);
@@ -115,7 +125,7 @@ export function CreatePage() {
         remember(false);
       }
     } catch (error) {
-      notify('common.error', 'error', { message: error instanceof Error ? error.message : String(error) });
+      fail(error);
     } finally {
       setBusy(false);
     }
@@ -125,9 +135,11 @@ export function CreatePage() {
     setBusy(true);
     try {
       const file = await exportFile('png');
-      if (file && (await share({ file, title: t('create.shareText'), text: payload }))) remember(false);
-    } catch (error) {
-      notify('common.error', 'error', { message: error instanceof Error ? error.message : String(error) });
+      // Text fallback only where the payload holds no secret.
+      const text = content.type === 'wifi' ? undefined : payload;
+      if (file && (await share({ file, title: t('create.shareText'), text }))) remember(false);
+    } catch {
+      notify('common.shareFailed', 'error');
     } finally {
       setBusy(false);
     }
@@ -136,7 +148,7 @@ export function CreatePage() {
   const onCopyImage = async () => {
     if (!ready) return;
     try {
-      await copyImage(exportBlob(ready.svg, { format: 'png', width: size, printMm, aspect: ready.aspect, title: summary }));
+      await copyImage(exportBlob(ready.svg, { format: 'png', width: size, printMm, aspect: ready.aspect, title: '' }));
       notify('common.copied');
       remember(false);
     } catch {
@@ -144,7 +156,7 @@ export function CreatePage() {
     }
   };
 
-  const hintKey: Record<string, Key> = { share: 'create.fromShare', scan: 'create.fromScan', history: 'create.fromHistory' };
+  const hintText = hint === 'share' ? t('create.fromShare') : hint === 'scan' ? t('create.fromScan') : hint === 'history' ? t('create.fromHistory') : '';
 
   return (
     <>
@@ -153,52 +165,46 @@ export function CreatePage() {
       </div>
 
       <div className="create-layout">
-        <div className="create-main">
-          <section className="card order-content" aria-labelledby="content-title">
-            <h2 id="content-title" className="visually-hidden">{t('create.content')}</h2>
-            <fieldset className="types">
-              <legend className="visually-hidden">{t('create.type')}</legend>
-              {CREATE_TYPES.map((type) => (
-                <label key={type}>
-                  <input type="radio" name="qr-type" value={type} checked={content.type === type} onChange={() => changeType(type)} />
-                  <span>
-                    <Icon name={TYPE_ICONS[type] ?? 'text'} size={22} />
-                    {t(`type.${type}` as Key)}
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-            <div style={{ marginTop: 16 }} className="stack" ref={formRef} onBlur={() => setTouched(true)}>
-              {originHint && hintKey[originHint] && <Note tone="info">{t(hintKey[originHint])}</Note>}
-              <ContentForm content={content} onChange={(c) => setDraft({ content: c })} errors={errors} showErrors={touched} />
-            </div>
-          </section>
-
-          <section className="card order-design" aria-labelledby="design-title">
-            <h2 id="design-title" style={{ marginBottom: 4 }}>{t('create.design')}</h2>
-            <StylePanel
-              style={style}
-              options={options}
-              type={content.type}
-              onStyle={(patch) => setDraft({ style: { ...style, ...patch } })}
-              onOptions={(patch) => setDraft({ options: { ...options, ...patch } })}
+        <section className="card area-content" aria-labelledby="content-title">
+          <h2 id="content-title" className="visually-hidden">{t('create.content')}</h2>
+          <fieldset className="types">
+            <legend className="visually-hidden">{t('create.type')}</legend>
+            {CREATE_TYPES.map((type) => (
+              <label key={type}>
+                <input type="radio" name="qr-type" value={type} checked={content.type === type} onChange={() => changeType(type)} />
+                <span>
+                  <Icon name={TYPE_ICONS[type] ?? 'text'} size={22} />
+                  {t(`type.${type}`)}
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <div className="stack form-body">
+            {hintText && <div ref={hintRef} tabIndex={-1} className="hint-focus"><Note tone="info">{hintText}</Note></div>}
+            <ContentForm
+              content={content}
+              onPatch={(patch) => setDraft((d) => ({ content: { ...d.content, ...patch } as CreateContent }))}
+              errors={errors}
+              touched={touched}
+              onTouch={(field) => setTouched((s) => (s.has(field) ? s : new Set(s).add(field)))}
+              showAll={hint !== null}
             />
-          </section>
-        </div>
+          </div>
+        </section>
 
-        <div className="create-side">
-          <section className="card order-preview" aria-labelledby="preview-title">
+        <div className="area-side">
+          <section className="card" aria-labelledby="preview-title" ref={previewRef}>
             <h2 id="preview-title" className="visually-hidden">{t('create.preview')}</h2>
-            <div className="preview">
+            <div className={`preview${style.transparentBackground ? ' is-transparent' : ''}`}>
               {ready ? (
-                <img src={svgDataUrl(ready.svg)} alt={t('create.previewAlt', { summary })} />
+                <img src={ready.src} alt={t('create.previewAlt', { summary })} />
               ) : (
-                <p className="empty">{qr && 'error' in qr && qr.error === 'capacity' ? t('error.capacity') : t('create.empty')}</p>
+                <p className="empty">{rendered && 'error' in rendered && rendered.error === 'capacity' ? t('error.capacity') : t('create.empty')}</p>
               )}
             </div>
 
             <div className="preview-actions">
-              <button type="button" className="btn btn-primary wide" disabled={!ready} onClick={() => { setFullscreen(true); remember(false); }}>
+              <button type="button" className="btn wide" disabled={!ready} onClick={() => { setFullscreen(true); remember(false); }}>
                 <Icon name="expand" size={18} />
                 {t('create.fullscreen')}
               </button>
@@ -230,14 +236,9 @@ export function CreatePage() {
               {format === 'pdf' ? (
                 <Select label={t('create.exportPrint')} value={printMm} onChange={setPrintMm} options={PRINT_MM.map((v) => ({ value: v, label: `${v / 10} cm` }))} />
               ) : (
-                <Select
-                  label={t('create.exportSize')}
-                  value={size}
-                  onChange={setSize}
-                  options={SIZES.map((v) => ({ value: v, label: `${v} × ${v} px` }))}
-                />
+                <Select label={t('create.exportSize')} value={size} onChange={setSize} options={SIZES.map((v) => ({ value: v, label: `${v} × ${v} px` }))} />
               )}
-              <button type="button" className="btn btn-block wide" style={{ gridColumn: '1 / -1' }} disabled={!ready || busy} onClick={onDownload}>
+              <button type="button" className="btn btn-primary btn-block wide" disabled={!ready || busy} onClick={onDownload}>
                 <Icon name="download" size={18} />
                 {t('create.download')} ({format.toUpperCase()})
               </button>
@@ -251,11 +252,22 @@ export function CreatePage() {
             )}
           </section>
 
-          {ready && <VerifyPanel svg={ready.svg} aspect={ready.aspect} payload={payload} matrix={ready.matrix} analysis={ready.analysis} />}
+          {ready && analysis && <VerifyPanel svg={ready.svg} aspect={ready.aspect} payload={payload} matrix={ready.matrix} analysis={analysis} />}
         </div>
+
+        <section className="card area-design" aria-labelledby="design-title">
+          <h2 id="design-title">{t('create.design')}</h2>
+          <StylePanel
+            style={style}
+            options={options}
+            type={content.type}
+            onStyle={(patch) => setDraft((d) => ({ style: { ...d.style, ...patch } }))}
+            onOptions={(patch) => setDraft((d) => ({ options: { ...d.options, ...(typeof patch === 'function' ? patch(d.options) : patch) } }))}
+          />
+        </section>
       </div>
 
-      {ready && <FullscreenQr svg={ready.svg} alt={t('create.previewAlt', { summary })} open={fullscreen} onClose={() => setFullscreen(false)} />}
+      {ready && <FullscreenQr src={ready.src} alt={t('create.previewAlt', { summary })} open={fullscreen} onClose={() => setFullscreen(false)} />}
     </>
   );
 }

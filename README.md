@@ -41,9 +41,10 @@ share-target support. The UI is available in German and English.*
 
 ### Erstellen
 
-- Inhaltstypen: **Link, Text, WLAN, Kontakt (vCard), E-Mail, Telefon, SMS,
-  Ort, Termin, Überweisung (GiroCode/EPC)** – mit Prüfung der Eingaben (z. B.
-  IBAN-Prüfsumme, WPA-Passwortlänge).
+- Inhaltstypen: **Link, Text, WLAN (inkl. WPA3), Kontakt (vCard), E-Mail,
+  Telefon, SMS, Ort, Termin, Überweisung (GiroCode/EPC)** – mit Prüfung der
+  Eingaben (z. B. IBAN-Prüfsumme, WPA-Passwortlänge, GiroCode-Größe).
+  Beim Wechsel des Typs bleiben die Eingaben je Typ erhalten.
 - Gestaltung: Farben (inkl. Vorlagen und eigener Eckfarbe), transparenter
   Hintergrund, Punktform, Form der Ecken, **Rahmen mit oder ohne
   Beschriftung**, **Logo/Bild in der Mitte**.
@@ -54,8 +55,10 @@ share-target support. The UI is available in German and English.*
   über das **Teilen-Menü** weitergeben.
 - Jeder erzeugte Code wird **sofort mit einem unabhängigen Scanner erneut
   gelesen**. Angezeigt werden Lesbarkeit, Version und Größe, Fehlerkorrektur,
-  Maske, Kodierung, Datenmenge, Codewörter, ungenutzte Redundanz sowie Hinweise
-  zu Kontrast, Ruhezone, Logo-Abdeckung und Mindest-Druckgröße.
+  Maske, Kodierung, Datenmenge, Codewörter, ungenutzte Fehlerkorrektur sowie
+  Hinweise zu Kontrast, Ruhezone und Mindest-Druckgröße. Ein Logo wird
+  nicht nur nach Fläche bewertet, sondern danach, wie viel Fehlerkorrektur es
+  im ungünstigsten Reed-Solomon-Block tatsächlich verbraucht.
 
 <p>
   <img src="docs/images/03-create-mobile.png" alt="Erstellen am Handy" width="260">
@@ -78,7 +81,7 @@ Geteilte Daten kannst du vor dem Erstellen in Ruhe **anpassen**.
 ### Verlauf – transparent und löschbar
 
 Gescannte und erstellte Codes landen im Verlauf, **nur im Speicher deines
-Browsers**. Du kannst einzelne Einträge oder alles löschen, den Verlauf als
+Browsers** (Codes mit Zwei-Faktor-Geheimnissen werden nie gespeichert). Du kannst einzelne Einträge oder alles löschen, den Verlauf als
 JSON exportieren und dir die **gespeicherten Rohdaten** genau so anzeigen
 lassen, wie sie im Browser liegen. Speichern lässt sich für beide Listen
 getrennt abschalten.

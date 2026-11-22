@@ -32,9 +32,15 @@ Non-goals: accounts, sync, server-side processing, analytics.
 | A11 | **Content Security Policy** in the built `index.html` (`connect-src 'self'`, no remote script/style/img) | Turns "no external requests" from a promise into a browser-enforced rule; also hardens against injected content | Only in production builds (dev server needs inline scripts). `wasm-unsafe-eval` for zxing. Styles via CSSOM only (`style-src 'self'`) |
 | A12 | **localStorage only, normalised on read** (`core/history.ts`) | `normalizeHistory/normalizeSettings/normalizeStyle` are the only entry points for stored data: input is `unknown`, garbage becomes defaults, logos must be raster data URLs (never remote URLs) | Keys `webapp.qr.settings.v1`, `webapp.qr.history.v1`; max 200 entries per list; schema bump ⇒ new key + migration |
 | A13 | **History writes only on explicit actions** (save, export, share, copy, fullscreen) | Live preview would otherwise create an entry per keystroke | Identical entries move to the top instead of duplicating |
-| A14 | **Nothing happens automatically after a scan** | Safety (phishing QR codes) and user control | Results are shown first; links are analysed (`analyzeUrl`) and only http(s) can be opened; OTP secrets and Wi-Fi passwords are masked |
+| A14 | **Nothing happens automatically after a scan** | Safety (phishing QR codes) and user control | Results are shown first; links are analysed (`analyzeUrl`, real host highlighted) and only http(s) can be opened; `mailto:` is rebuilt from the displayed fields (no hidden bcc), `tel:` with `*#` warns; OTP secrets and Wi-Fi passwords are masked. **OTP codes are never written to the history** |
 | A15 | **i18n via typed flat dictionaries** (`app/i18n/de.ts` is the reference, `Dict` type forces completeness) | Small, no library; missing keys fail the type check | Privacy policy is JSX per language (long-form text). More languages: tracked in an issue |
 | A16 | **E2E tests with Playwright against the production build** (desktop + mobile profile), guarded by an auto-fixture that fails on console errors and on any request leaving the origin | CSP, service worker and WASM loading only exist in the build; the privacy promise is checked continuously | CI installs Chromium; locally the installed Chrome is used |
+
+| A17 | **One parser for creatable content** (`core/convert.ts`); `core/parse.ts` derives display fields from it | Two parsers had drifted (sms decoding, vCard groups, geo labels). Now "show" and "edit" cannot disagree; shared text helpers live in `core/text.ts` | Malformed input never throws (`safeDecode`); calendar files are read from the first VEVENT block, UTC times converted to local, all-day DTEND treated as exclusive |
+| A18 | **Logo check per Reed-Solomon block** (`core/damage.ts`) | Area is a poor proxy: a logo cuts codewords partially and blocks unevenly. Modules are mapped to codewords (ISO 18004 placement + interleaving); the worst block is compared with its correctable errors | Findings `logoOk/logoLarge/logoTooLarge` use that load; covering alignment patterns is a separate warning |
+| A19 | **Shared origin awareness**: GitHub Pages serves all projects of `jb-io` from one origin | Other projects could see/clear our storage and we theirs | SW only deletes caches prefixed `qr-lokal-` and only handles requests in its scope; "delete all data" only unregisters our own scope; privacy policy says so |
+| A20 | **Toasts in their own context**, store updates through refs/updaters | A toast or keystroke must not re-render every page; async callbacks (geolocation, logo upload) must patch the latest draft, and several scans in one image must all be stored | `setDraft` accepts updater functions; `persistHistory` applies updaters to a ref-held document |
+| A21 | **Precache bypasses the HTTP cache** (`cache: 'reload'`), SW version hashes every served byte incl. public files and `index.html` | GitHub Pages sends `max-age=600`; a new worker could otherwise store an old `index.html` pointing at deleted chunks | Update banner reloads only after the user confirms; first install never reloads |
 
 ## 3. Layout
 
@@ -46,7 +52,9 @@ src/core/                pure logic, tested with node:test
   types.ts               domain types – start here
   payloads.ts            content → payload string, validation (IBAN, …)
   parse.ts               decoded text → typed fields, URL risk analysis
-  convert.ts             text / shared data / vcf → editable content
+  text.ts                escaping/unescaping, tolerant decoding, content lines
+  convert.ts             the parser: text / shared data / vcf / ics → editable content
+  damage.ts              module → codeword → RS block mapping (logo check)
   matrix.ts              payload → module matrix + capacity figures
   render.ts              matrix + style → SVG (master format)
   analysis.ts            contrast, quiet zone, logo coverage, print size

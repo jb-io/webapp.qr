@@ -4,26 +4,33 @@ import type { FieldError } from '../../core/payloads.ts';
 import type {
   ContactContent, CreateContent, EmailContent, EpcContent, EventContent, GeoContent, WifiContent,
 } from '../../core/types.ts';
-import { Check, Segmented, TextField } from './ui.tsx';
+import { Segmented, TextField, Toggle } from './ui.tsx';
 import { Icon } from './Icon.tsx';
 import { useI18n, type Key } from '../i18n/index.tsx';
 
 interface Props {
   content: CreateContent;
-  onChange: (content: CreateContent) => void;
+  /** Applies a patch to the latest content of the same type (safe for async callbacks). */
+  onPatch: (patch: Partial<CreateContent>) => void;
   errors: FieldError[];
-  /** Only show errors for fields the user has touched (or after a submit attempt). */
-  showErrors: boolean;
+  /** Fields the user has left at least once - only those show errors. */
+  touched: ReadonlySet<string>;
+  onTouch: (field: string) => void;
+  /** Show all errors (prefilled from outside). */
+  showAll: boolean;
 }
 
-export function ContentForm({ content, onChange, errors, showErrors }: Props) {
+/** Per-field error lookup and blur handling, shared by all sub-forms. */
+type Err = (field: string) => { error?: string; onBlur: () => void };
+
+export function ContentForm({ content, onPatch, errors, touched, onTouch, showAll }: Props) {
   const { t } = useI18n();
-  const err = (field: string) => {
+  const err: Err = (field) => {
     const e = errors.find((x) => x.field === field);
-    if (!e || !showErrors) return undefined;
-    return t(`error.${e.code}` as Key);
+    const visible = e && (showAll || touched.has(field));
+    return { ...(visible ? { error: t(`error.${e.code}` as Key) } : {}), onBlur: () => onTouch(field) };
   };
-  const set = <C extends CreateContent>(c: C, patch: Partial<C>) => onChange({ ...c, ...patch });
+  const set = <C extends CreateContent>(_c: C, patch: Partial<C>) => onPatch(patch as Partial<CreateContent>);
 
   switch (content.type) {
     case 'text':
@@ -33,7 +40,7 @@ export function ContentForm({ content, onChange, errors, showErrors }: Props) {
           value={content.text}
           multiline
           onChange={(text) => set(content, { text })}
-          error={err('text')}
+          {...err('text')}
           hint={t('field.charCount', { count: [...content.text].length, max: 2000 })}
           maxLength={2000}
         />
@@ -47,7 +54,7 @@ export function ContentForm({ content, onChange, errors, showErrors }: Props) {
           inputMode="url"
           placeholder="https://example.org"
           onChange={(url) => set(content, { url })}
-          error={err('url')}
+          {...err('url')}
           spellCheck={false}
         />
       );
@@ -60,12 +67,12 @@ export function ContentForm({ content, onChange, errors, showErrors }: Props) {
     case 'sms':
       return (
         <div className="stack">
-          <TextField label={t('field.number')} value={content.number} type="tel" inputMode="tel" autoComplete="tel" onChange={(number) => set(content, { number })} error={err('number')} />
+          <TextField label={t('field.number')} value={content.number} type="tel" inputMode="tel" autoComplete="tel" onChange={(number) => set(content, { number })} {...err('number')} />
           <TextField label={t('field.message')} value={content.message} multiline optional onChange={(message) => set(content, { message })} />
         </div>
       );
     case 'phone':
-      return <TextField label={t('field.number')} value={content.number} type="tel" inputMode="tel" placeholder="+49 30 1234567" onChange={(number) => set(content, { number })} error={err('number')} />;
+      return <TextField label={t('field.number')} value={content.number} type="tel" inputMode="tel" placeholder="+49 30 1234567" onChange={(number) => set(content, { number })} {...err('number')} />;
     case 'geo':
       return <GeoForm c={content} set={(p) => set(content, p)} err={err} />;
     case 'event':
@@ -75,27 +82,28 @@ export function ContentForm({ content, onChange, errors, showErrors }: Props) {
   }
 }
 
-type Sub<C> = { c: C; set: (patch: Partial<C>) => void; err: (field: string) => string | undefined };
+type Sub<C> = { c: C; set: (patch: Partial<C>) => void; err: Err };
 
 function WifiForm({ c, set, err }: Sub<WifiContent>) {
   const { t } = useI18n();
   return (
     <div className="stack">
-      <TextField label={t('field.ssid')} value={c.ssid} onChange={(ssid) => set({ ssid })} error={err('ssid')} spellCheck={false} />
+      <TextField label={t('field.ssid')} value={c.ssid} onChange={(ssid) => set({ ssid })} {...err('ssid')} spellCheck={false} />
       <Segmented
         legend={t('field.security')}
         value={c.security}
         onChange={(security) => set({ security })}
         options={[
           { value: 'WPA', label: t('field.wpa') },
+          { value: 'SAE', label: t('field.sae') },
           { value: 'WEP', label: t('field.wep') },
           { value: 'nopass', label: t('field.nopass') },
         ]}
       />
       {c.security !== 'nopass' && (
-        <TextField label={t('field.password')} value={c.password} secret onChange={(password) => set({ password })} error={err('password')} autoComplete="off" spellCheck={false} />
+        <TextField label={t('field.password')} value={c.password} secret onChange={(password) => set({ password })} {...err('password')} autoComplete="off" spellCheck={false} hint={/^[\da-f]{64}$/i.test(c.password) ? t('field.hexHint') : undefined} />
       )}
-      <Check label={t('field.hidden')} checked={c.hidden} onChange={(hidden) => set({ hidden })} />
+      <Toggle label={t('field.hidden')} checked={c.hidden} onChange={(hidden) => set({ hidden })} />
     </div>
   );
 }
@@ -103,7 +111,7 @@ function WifiForm({ c, set, err }: Sub<WifiContent>) {
 function ContactForm({ c, set, err }: Sub<ContactContent>) {
   const { t } = useI18n();
   const f = (key: keyof ContactContent & string, extra: Partial<Parameters<typeof TextField>[0]> = {}) => (
-    <TextField label={t(`field.${key}` as Key)} value={String(c[key])} onChange={(v) => set({ [key]: v } as Partial<ContactContent>)} error={err(key)} optional {...extra} />
+    <TextField label={t(`field.${key}` as Key)} value={String(c[key])} onChange={(v) => set({ [key]: v } as Partial<ContactContent>)} {...err(key)} optional {...extra} />
   );
   return (
     <div className="stack">
@@ -138,7 +146,7 @@ function EmailForm({ c, set, err }: Sub<EmailContent>) {
   const { t } = useI18n();
   return (
     <div className="stack">
-      <TextField label={t('field.to')} value={c.to} type="email" inputMode="email" onChange={(to) => set({ to })} error={err('to')} spellCheck={false} />
+      <TextField label={t('field.to')} value={c.to} type="email" inputMode="email" onChange={(to) => set({ to })} {...err('to')} spellCheck={false} />
       <TextField label={t('field.subject')} value={c.subject} optional onChange={(subject) => set({ subject })} />
       <TextField label={t('field.body')} value={c.body} optional multiline onChange={(body) => set({ body })} />
     </div>
@@ -166,8 +174,8 @@ function GeoForm({ c, set, err }: Sub<GeoContent>) {
   return (
     <div className="stack">
       <div className="grid-2">
-        <TextField label={t('field.latitude')} value={c.latitude} inputMode="decimal" placeholder="52.520008" onChange={(latitude) => set({ latitude })} error={err('latitude')} />
-        <TextField label={t('field.longitude')} value={c.longitude} inputMode="decimal" placeholder="13.404954" onChange={(longitude) => set({ longitude })} error={err('longitude')} />
+        <TextField label={t('field.latitude')} value={c.latitude} inputMode="decimal" placeholder="52.520008" onChange={(latitude) => set({ latitude })} {...err('latitude')} />
+        <TextField label={t('field.longitude')} value={c.longitude} inputMode="decimal" placeholder="13.404954" onChange={(longitude) => set({ longitude })} {...err('longitude')} />
       </div>
       <div className="row">
         <button type="button" className="btn btn-sm" onClick={locate} disabled={state === 'busy'}>
@@ -190,11 +198,11 @@ function EventForm({ c, set, err }: Sub<EventContent>) {
   const type = c.allDay ? 'date' : 'datetime-local';
   return (
     <div className="stack">
-      <TextField label={t('field.eventTitle')} value={c.title} onChange={(title) => set({ title })} error={err('title')} />
-      <Check label={t('field.allDay')} checked={c.allDay} onChange={toggleAllDay} />
+      <TextField label={t('field.eventTitle')} value={c.title} onChange={(title) => set({ title })} {...err('title')} />
+      <Toggle label={t('field.allDay')} checked={c.allDay} onChange={toggleAllDay} />
       <div className="grid-2">
-        <TextField label={t('field.start')} value={c.start} type={type} onChange={(start) => set({ start })} error={err('start')} />
-        <TextField label={t('field.end')} value={c.end} type={type} optional onChange={(end) => set({ end })} error={err('end')} />
+        <TextField label={t('field.start')} value={c.start} type={type} onChange={(start) => set({ start })} {...err('start')} />
+        <TextField label={t('field.end')} value={c.end} type={type} optional onChange={(end) => set({ end })} {...err('end')} />
       </div>
       <TextField label={t('field.location')} value={c.location} optional onChange={(location) => set({ location })} />
       <TextField label={t('field.description')} value={c.description} optional multiline onChange={(description) => set({ description })} />
@@ -206,11 +214,11 @@ function EpcForm({ c, set, err }: Sub<EpcContent>) {
   const { t } = useI18n();
   return (
     <div className="stack">
-      <TextField label={t('field.name')} value={c.name} maxLength={70} onChange={(name) => set({ name })} error={err('name')} />
-      <TextField label={t('field.iban')} value={c.iban} placeholder="DE89 3704 0044 0532 0130 00" onChange={(iban) => set({ iban })} error={err('iban')} spellCheck={false} />
+      <TextField label={t('field.name')} value={c.name} maxLength={70} onChange={(name) => set({ name })} {...err('name')} />
+      <TextField label={t('field.iban')} value={c.iban} placeholder="DE89 3704 0044 0532 0130 00" onChange={(iban) => set({ iban })} {...err('iban')} spellCheck={false} />
       <div className="grid-2">
-        <TextField label={t('field.bic')} value={c.bic} optional onChange={(bic) => set({ bic })} error={err('bic')} spellCheck={false} />
-        <TextField label={t('field.amount')} value={c.amount} optional inputMode="decimal" placeholder="12,50" onChange={(amount) => set({ amount })} error={err('amount')} />
+        <TextField label={t('field.bic')} value={c.bic} optional onChange={(bic) => set({ bic })} {...err('bic')} spellCheck={false} />
+        <TextField label={t('field.amount')} value={c.amount} optional inputMode="decimal" placeholder="12,50" onChange={(amount) => set({ amount })} {...err('amount')} />
       </div>
       <TextField
         label={t('field.remittance')}
@@ -218,10 +226,10 @@ function EpcForm({ c, set, err }: Sub<EpcContent>) {
         optional
         maxLength={140}
         onChange={(text) => set({ text })}
-        error={err('text')}
+        {...err('text')}
         hint={t('field.charCount', { count: c.text.length, max: 140 })}
       />
-      <TextField label={t('field.reference')} value={c.reference} optional maxLength={35} onChange={(reference) => set({ reference })} error={err('reference')} />
+      <TextField label={t('field.reference')} value={c.reference} optional maxLength={35} onChange={(reference) => set({ reference })} {...err('reference')} hint={t('field.referenceHint')} />
     </div>
   );
 }

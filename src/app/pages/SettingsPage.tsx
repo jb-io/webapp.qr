@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Settings } from '../../core/types.ts';
 import { Icon } from '../components/Icon.tsx';
 import { ConfirmDialog, Segmented, Select, Toggle } from '../components/ui.tsx';
@@ -7,11 +7,29 @@ import { useStore } from '../state/Store.tsx';
 import { formatBytes, rawStorage, wipeEverything } from '../lib/storage.ts';
 import { REPO_URL } from '../config.ts';
 
+interface InstallEvent extends Event { prompt: () => Promise<void> }
+
+/** Chromium's install prompt, captured so a real "Install" button can be offered. */
+function useInstallPrompt(): (() => void) | null {
+  const [event, setEvent] = useState<InstallEvent | null>(() => (window as unknown as { __installPrompt?: InstallEvent }).__installPrompt ?? null);
+  useEffect(() => {
+    const onPrompt = (e: Event) => {
+      e.preventDefault();
+      setEvent(e as InstallEvent);
+    };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+  }, []);
+  return event ? () => { void event.prompt(); setEvent(null); } : null;
+}
+
 export function SettingsPage() {
   const { t, lang } = useI18n();
   const { settings, updateSettings } = useStore();
   const [confirm, setConfirm] = useState(false);
   const used = rawStorage().reduce((sum, r) => sum + r.bytes, 0);
+  const install = useInstallPrompt();
+  const standalone = typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches;
 
   return (
     <>
@@ -55,7 +73,17 @@ export function SettingsPage() {
 
       <section className="card" aria-labelledby="s-install">
         <h2 id="s-install" className="card-title">{t('settings.install')}</h2>
-        <p className="muted">{t('settings.installHint')}</p>
+        {standalone ? <p className="muted">{t('settings.installed')}</p> : (
+          <>
+            <p className="muted">{t('settings.installHint')}</p>
+            {install && (
+              <button type="button" className="btn btn-primary section-gap" onClick={install}>
+                <Icon name="download" size={18} />
+                {t('settings.installNow')}
+              </button>
+            )}
+          </>
+        )}
       </section>
 
       <section className="card" aria-labelledby="s-about">
@@ -75,9 +103,8 @@ export function SettingsPage() {
         confirmLabel={t('common.delete')}
         danger
         onCancel={() => setConfirm(false)}
-        onConfirm={async () => {
-          await wipeEverything();
-          window.location.replace(window.location.pathname);
+        onConfirm={() => {
+          void wipeEverything().catch(() => undefined).finally(() => window.location.replace(window.location.pathname));
         }}
       />
     </>

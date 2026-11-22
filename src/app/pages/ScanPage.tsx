@@ -6,9 +6,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { parseContent } from '../../core/parse.ts';
 import { Icon } from '../components/Icon.tsx';
-import { ResultCard, formatLabel } from '../components/ResultCard.tsx';
+import { ResultCard } from '../components/ResultCard.tsx';
 import { Note } from '../components/ui.tsx';
-import { useI18n, type Key } from '../i18n/index.tsx';
+import { useI18n } from '../i18n/index.tsx';
 import { useStore } from '../state/Store.tsx';
 import { decode, decodeFile, type DecodedCode } from '../lib/decoder.ts';
 
@@ -22,13 +22,15 @@ interface TorchTrack extends MediaStreamTrack {
   getCapabilities(): MediaTrackCapabilities & { torch?: boolean };
 }
 
+interface Found { code: DecodedCode; saved: boolean }
+
 export function ScanPage() {
   const { t } = useI18n();
-  const { recordScan, settings, pendingImage, setPendingImage, route } = useStore();
+  const { recordScan, settings, takePendingImage, pendingImageStamp } = useStore();
   const [cam, setCam] = useState<CamState>('off');
-  const [error, setError] = useState<string>('');
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [results, setResults] = useState<DecodedCode[]>([]);
+  const [results, setResults] = useState<Found[]>([]);
   const [dragging, setDragging] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceIndex, setDeviceIndex] = useState(-1);
@@ -38,7 +40,9 @@ export function ScanPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const loopRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
-  const resultRef = useRef<HTMLDivElement>(null);
+  const resultRef = useRef<HTMLElement>(null);
+  const stopRef = useRef<HTMLButtonElement>(null);
+  const startRef = useRef<HTMLButtonElement>(null);
 
   const stopCamera = useCallback(() => {
     loopRef.current += 1; // invalidates a running loop
@@ -58,20 +62,27 @@ export function ScanPage() {
     document.addEventListener('visibilitychange', onHide);
     return () => document.removeEventListener('visibilitychange', onHide);
   }, [stopCamera]);
+
+  // Focus follows the controls that replace each other.
   useEffect(() => {
-    if (route !== 'scan') stopCamera();
-  }, [route, stopCamera]);
+    if (cam === 'on') stopRef.current?.focus();
+  }, [cam]);
 
   const found = useCallback((codes: DecodedCode[], source: 'camera' | 'image') => {
-    setResults(codes);
-    for (const c of codes) {
-      recordScan({ text: c.text, format: c.format, contentType: parseContent(c.text, c.format).type, source });
-    }
+    const list = codes.map((code) => {
+      const type = parseContent(code.text, code.format).type;
+      // Two-factor secrets are never persisted (Architecture.md A14).
+      const saved = type !== 'otp' && recordScan({ text: code.text, format: code.format, contentType: type, source });
+      return { code, saved, type };
+    });
+    setResults(list);
     if (settings.vibrate && 'vibrate' in navigator) navigator.vibrate?.(60);
-    const first = codes[0];
-    setAnnounce(codes.length > 1 ? t('scan.foundMany', { count: codes.length })
-      : first ? t('scan.found', { type: t(`type.${parseContent(first.text, first.format).type}` as Key) }) : '');
-    requestAnimationFrame(() => resultRef.current?.focus());
+    const first = list[0];
+    setAnnounce(list.length > 1 ? t('scan.foundMany', { count: list.length }) : first ? t('scan.found', { type: t(`type.${first.type}`) }) : '');
+    requestAnimationFrame(() => {
+      resultRef.current?.focus({ preventScroll: true });
+      resultRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
   }, [recordScan, settings.vibrate, t]);
 
   const runLoop = useCallback((token: number) => {
@@ -82,11 +93,15 @@ export function ScanPage() {
       if (loopRef.current !== token || !video || !ctx) return;
       if (video.readyState >= 2 && video.videoWidth) {
         const scale = Math.min(1, MAX_FRAME_EDGE / Math.max(video.videoWidth, video.videoHeight));
-        canvas.width = Math.round(video.videoWidth * scale);
-        canvas.height = Math.round(video.videoHeight * scale);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const w = Math.round(video.videoWidth * scale);
+        const h = Math.round(video.videoHeight * scale);
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        ctx.drawImage(video, 0, 0, w, h);
         try {
-          const codes = await decode(ctx.getImageData(0, 0, canvas.width, canvas.height), { thorough: false });
+          const codes = await decode(ctx.getImageData(0, 0, w, h), { thorough: false });
           if (loopRef.current !== token) return;
           if (codes.length) {
             stopCamera();
@@ -120,8 +135,7 @@ export function ScanPage() {
     setCam('starting');
     const token = loopRef.current;
     try {
-      const list = devices.length ? devices : [];
-      const chosen = index >= 0 ? list[index] : undefined;
+      const chosen = index >= 0 ? devices[index] : undefined;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: chosen
@@ -155,6 +169,11 @@ export function ScanPage() {
       else setError(t('scan.cameraError', { message: err instanceof Error ? err.message : String(err) }));
     }
   }, [deviceIndex, devices, runLoop, stopCamera, t]);
+
+  const stopByUser = () => {
+    stopCamera();
+    requestAnimationFrame(() => startRef.current?.focus());
+  };
 
   const toggleTorch = async () => {
     const track = streamRef.current?.getVideoTracks()[0];
@@ -190,10 +209,9 @@ export function ScanPage() {
 
   // Image shared from another app (Android share target).
   useEffect(() => {
-    if (!pendingImage) return;
-    setPendingImage(null);
-    void readImage(pendingImage.file);
-  }, [pendingImage, readImage, setPendingImage]);
+    const img = takePendingImage();
+    if (img) void readImage(img.file);
+  }, [pendingImageStamp, takePendingImage, readImage]);
 
   // Paste an image from the clipboard (desktop).
   useEffect(() => {
@@ -220,22 +238,20 @@ export function ScanPage() {
   return (
     <>
       <div className="page-head">
-        <div>
-          <h1>{t('scan.title')}</h1>
-        </div>
+        <h1>{t('scan.title')}</h1>
       </div>
 
       <div className="visually-hidden" role="status" aria-live="polite">{announce}</div>
 
       <div className={`scan-layout${hasResult ? ' has-result' : ''}`}>
-        <div className="stack">
+        <div className="stack scan-input">
           <div className="viewer" hidden={cam === 'off'}>
             <video ref={videoRef} playsInline muted aria-label={t('scan.video')} />
             <div className="finder" aria-hidden="true" />
             {cam === 'on' && <div className="scanline" aria-hidden="true" />}
             <div className="status" role="status">{cam === 'starting' ? t('scan.starting') : t('scan.searching')}</div>
             <div className="controls">
-              <button type="button" className="btn" onClick={stopCamera}>
+              <button ref={stopRef} type="button" className="btn" onClick={stopByUser}>
                 <Icon name="stop" size={18} />
                 {t('scan.stop')}
               </button>
@@ -254,15 +270,15 @@ export function ScanPage() {
 
           {cam === 'off' && (
             <div
-              className={`dropzone${dragging ? ' dragging' : ''}`}
+              className={`dropzone${dragging ? ' dragging' : ''}${hasResult ? ' compact' : ''}`}
               onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
               onDrop={onDrop}
             >
-              <div className="hero-icon"><Icon name="scan" size={36} /></div>
-              <p>{t('scan.intro')}</p>
-              <div className="actions" style={{ justifyContent: 'center' }}>
-                <button type="button" className="btn btn-primary btn-lg" onClick={() => void startCamera()}>
+              {!hasResult && <div className="hero-icon"><Icon name="scan" size={40} /></div>}
+              {!hasResult && <p>{t('scan.intro')}</p>}
+              <div className="actions">
+                <button ref={startRef} type="button" className="btn btn-primary btn-lg" onClick={() => void startCamera()}>
                   <Icon name="camera" />
                   {hasResult ? t('scan.again') : t('scan.start')}
                 </button>
@@ -271,7 +287,7 @@ export function ScanPage() {
                   {t('scan.image')}
                 </button>
               </div>
-              <p className="small">{t('scan.dropHint')}</p>
+              {!hasResult && <p className="small pointer-only">{t('scan.dropHint')}</p>}
               <input
                 ref={fileRef}
                 type="file"
@@ -286,18 +302,25 @@ export function ScanPage() {
             </div>
           )}
 
-          {busy && <Note tone="info">{t('scan.reading')}</Note>}
-          {error && <Note tone="error">{error}</Note>}
+          {busy && <Note tone="info" live>{t('scan.reading')}</Note>}
+          {error && <Note tone="error" live>{error}</Note>}
+
+          {!hasResult && cam === 'off' && (
+            <ul className="trust" aria-label={t('settings.about')}>
+              <li><Icon name="shield" size={16} />{t('trust.local')}</li>
+              <li><Icon name="eyeOff" size={16} />{t('trust.noTracking')}</li>
+              <li><Icon name="github" size={16} />{t('trust.openSource')}</li>
+            </ul>
+          )}
         </div>
 
         {hasResult && (
-          <div className="stack" ref={resultRef} tabIndex={-1} aria-label={t('result.heading')}>
+          <section className="stack scan-results" ref={resultRef} tabIndex={-1} aria-label={t('result.heading')}>
             {results.length > 1 && <p className="muted">{t('scan.foundMany', { count: results.length })}</p>}
-            {results.map((code, i) => (
-              <ResultCard key={`${i}-${code.format}-${code.text.slice(0, 20)}`} code={code} />
+            {results.map((r, i) => (
+              <ResultCard key={`${i}-${r.code.format}-${r.code.text.slice(0, 20)}`} code={r.code} saved={r.saved} />
             ))}
-            {results.length > 1 && <p className="muted small">{results.map((r) => formatLabel(r.format)).join(', ')}</p>}
-          </div>
+          </section>
         )}
       </div>
     </>

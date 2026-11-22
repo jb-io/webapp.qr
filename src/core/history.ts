@@ -9,6 +9,7 @@ import type {
   CreateContent, CreateEntry, HistoryDoc, MatrixOptions, QrStyle, ReadType, ScanEntry, Settings,
 } from './types.ts';
 import { emptyContent } from './payloads.ts';
+import { LOGO_MAX, LOGO_MIN } from './render.ts';
 
 export const HISTORY_KEY = 'webapp.qr.history.v1';
 export const SETTINGS_KEY = 'webapp.qr.settings.v1';
@@ -48,13 +49,14 @@ export function normalizeStyle(raw: unknown): QrStyle {
     quietZone: Math.round(num(r.quietZone, d.quietZone, 0, 10)),
     frame: oneOf(r.frame, ['none', 'border', 'rounded', 'banner'], d.frame),
     frameColor: color(r.frameColor, d.frameColor),
-    label: str(r.label).slice(0, 60),
+    // Slice by code points - never split a surrogate pair.
+    label: Array.from(str(r.label)).slice(0, 60).join(''),
     labelPosition: oneOf(r.labelPosition, ['top', 'bottom'], d.labelPosition),
     labelSize: oneOf(r.labelSize, ['s', 'm', 'l'], d.labelSize),
     labelColor: r.labelColor === '' ? '' : color(r.labelColor, d.labelColor),
     // Only raster data URLs - never remote references.
     logo: /^data:image\/(png|jpeg|webp|gif);base64,[\w+/=]+$/.test(str(r.logo)) ? str(r.logo) : '',
-    logoSize: num(r.logoSize, d.logoSize, 0.1, 0.3),
+    logoSize: num(r.logoSize, d.logoSize, LOGO_MIN, LOGO_MAX),
     logoExcavate: bool(r.logoExcavate, d.logoExcavate),
     logoPlate: bool(r.logoPlate, d.logoPlate),
   };
@@ -80,7 +82,7 @@ export function normalizeContent(raw: unknown): CreateContent | null {
     if (key === 'type') continue;
     out[key] = typeof fallback === 'boolean' ? bool(raw[key], fallback) : str(raw[key], fallback as string);
   }
-  if (type === 'wifi') out.security = oneOf(raw.security, ['WPA', 'WEP', 'nopass'], 'WPA');
+  if (type === 'wifi') out.security = oneOf(raw.security, ['WPA', 'SAE', 'WEP', 'nopass'], 'WPA');
   return out as unknown as CreateContent;
 }
 

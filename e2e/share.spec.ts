@@ -37,3 +37,31 @@ test('shared plain text becomes editable text', async ({ page }) => {
   await share(page, { title: '', text: 'Kopierter Text', url: '' });
   await expect(page.getByRole('textbox', { name: 'Text' })).toHaveValue('Kopierter Text');
 });
+
+test('real share-target POST through the service worker', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium');
+  await page.goto('/#/settings');
+  // Wait until the service worker controls the page (first visit: claim()).
+  await page.waitForFunction(() => navigator.serviceWorker?.controller !== null, undefined, { timeout: 15000 });
+  await page.evaluate(() => {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.enctype = 'multipart/form-data';
+    form.action = './share-target';
+    const add = (name: string, value: string) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.append(input);
+    };
+    add('title', '');
+    add('text', 'Geteilter Text aus einer anderen App');
+    add('url', '');
+    document.body.append(form);
+    form.submit();
+  });
+  await expect(page.getByRole('textbox', { name: 'Text' })).toHaveValue('Geteilter Text aus einer anderen App');
+  await expect(page.getByText('Geteilte Daten übernommen')).toBeVisible();
+  expect(await page.evaluate(async () => (await caches.keys()).includes('qr-lokal-share'))).toBe(false);
+});

@@ -4,7 +4,7 @@
  * decoding check with a real reader happens in the app on top of this.
  */
 import { computeLayout } from './render.ts';
-import { EC_RECOVERY } from './types.ts';
+import { coverageDamage } from './damage.ts';
 import type { Finding, QrMatrix, QrStyle } from './types.ts';
 
 /** `#rgb` / `#rrggbb` -> [r, g, b] in 0..255, or null. */
@@ -41,6 +41,8 @@ export interface Analysis {
   fill: number;
   /** Share of symbol modules hidden by the logo, 0..1. */
   logoCoverage: number;
+  /** Worst-block share of the correctable errors the logo uses (0..; > 1 unreadable). */
+  logoLoad: number;
   /** Suggested minimum printed edge length in millimetres. */
   minPrintMm: number;
 }
@@ -75,13 +77,19 @@ export function analyze(m: QrMatrix, s: QrStyle, outputPx: number): Analysis {
   add('capacity', fill > 0.95 ? 'info' : 'ok', { percent: Math.round(fill * 100) });
 
   let logoCoverage = 0;
+  let logoLoad = 0;
   if (layout.logoBox) {
-    logoCoverage = (layout.logoBox.size * layout.logoBox.size) / (m.size * m.size);
-    const budget = EC_RECOVERY[m.ecLevel];
-    const params = { percent: Math.round(logoCoverage * 100), budget: Math.round(budget * 100) };
-    if (logoCoverage > budget * 0.75) add('logoTooLarge', 'error', params);
-    else if (logoCoverage > budget * 0.5) add('logoLarge', 'warn', params);
+    const box = layout.logoBox;
+    logoCoverage = (box.size * box.size) / (m.size * m.size);
+    // The logo hides every module in its box (excavated, plate or drawn over).
+    const inBox = (r: number, c: number) => r >= box.start && r < box.start + box.size && c >= box.start && c < box.start + box.size;
+    const damage = coverageDamage(m, inBox);
+    logoLoad = damage.worstBlockLoad;
+    const params = { area: Math.round(logoCoverage * 100), load: Number.isFinite(logoLoad) ? Math.round(logoLoad * 100) : 999 };
+    if (logoLoad > 0.8) add('logoTooLarge', 'error', params);
+    else if (logoLoad > 0.5) add('logoLarge', 'warn', params);
     else add('logoOk', 'ok', params);
+    if (damage.functionModulesCovered > 0) add('logoAlignment', 'warn');
     if (m.ecLevel === 'L' || m.ecLevel === 'M') add('logoLowEc', 'warn');
   }
 
@@ -97,5 +105,5 @@ export function analyze(m: QrMatrix, s: QrStyle, outputPx: number): Analysis {
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warns = findings.filter((f) => f.severity === 'warn').length;
   const quality: Quality = errors ? 'poor' : warns ? 'fair' : 'good';
-  return { findings, quality, fill, logoCoverage, minPrintMm };
+  return { findings, quality, fill, logoCoverage, logoLoad, minPrintMm };
 }

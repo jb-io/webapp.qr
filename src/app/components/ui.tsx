@@ -1,8 +1,8 @@
 /** Small accessible form and feedback building blocks. */
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { Component, useEffect, useId, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { Icon, type IconName } from './Icon.tsx';
 import { useI18n } from '../i18n/index.tsx';
-import { useStore } from '../state/Store.tsx';
+import { useToasts } from '../state/Store.tsx';
 
 interface FieldProps {
   label: string;
@@ -18,8 +18,10 @@ interface FieldProps {
   placeholder?: string;
   maxLength?: number;
   spellCheck?: boolean;
-  /** Mask the value (passwords); a toggle reveals it. */
+  /** Mask the value (passwords). */
   secret?: boolean;
+  /** Called when the field loses focus (per-field "touched" state). */
+  onBlur?: () => void;
   id?: string;
 }
 
@@ -34,10 +36,12 @@ export function TextField(p: FieldProps) {
     value: p.value,
     'aria-invalid': p.error ? true : undefined,
     'aria-describedby': describedBy,
+    'aria-required': p.optional ? undefined : true,
     placeholder: p.placeholder,
     maxLength: p.maxLength,
     autoComplete: p.autoComplete ?? 'off',
     spellCheck: p.spellCheck,
+    onBlur: p.onBlur,
   } as const;
   return (
     <div className="field">
@@ -79,27 +83,19 @@ export function Toggle({ label, checked, onChange, hint }: { label: string; chec
   );
 }
 
-export function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label className="check">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      {label}
-    </label>
-  );
-}
-
-export function Segmented<T extends string>({ legend, value, options, onChange, name }: {
+export function Segmented<T extends string>({ legend, value, options, onChange, name, hideLegend }: {
   legend: string;
   value: T;
   options: { value: T; label: string; icon?: IconName }[];
   onChange: (value: T) => void;
   name?: string;
+  hideLegend?: boolean;
 }) {
   const auto = useId();
   return (
     <fieldset className="plain">
-      <legend>{legend}</legend>
-      <div className="segmented">
+      <legend className={hideLegend ? 'visually-hidden' : undefined}>{legend}</legend>
+      <div className={`segmented${options.length >= 4 ? ' many' : ''}`}>
         {options.map((o) => (
           <label key={o.value}>
             <input type="radio" name={name ?? auto} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} />
@@ -142,34 +138,48 @@ export function Select<T extends string | number>({ label, value, options, onCha
   );
 }
 
+const HEX = /^#[\da-f]{6}$/i;
+
+/** Colour picker plus hex field; only complete `#rrggbb` values leave this component. */
 export function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const { t } = useI18n();
   const id = useId();
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <div className="color-field">
-        <input type="color" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} />
+        <input type="color" value={HEX.test(value) ? value : '#000000'} onChange={(e) => onChange(e.target.value)} aria-label={t('style.colorPicker', { label })} />
         <input
           id={id}
           className="input"
-          value={value}
+          value={text}
           maxLength={7}
           spellCheck={false}
+          aria-invalid={HEX.test(text) ? undefined : true}
           onChange={(e) => {
             const v = e.target.value.trim();
-            if (/^#[\da-f]{6}$/i.test(v)) onChange(v.toLowerCase());
-            else if (/^#?[\da-f]{0,6}$/i.test(v)) onChange(v.startsWith('#') ? v : `#${v}`);
+            const withHash = v.startsWith('#') ? v : `#${v}`;
+            setText(withHash);
+            if (HEX.test(withHash)) onChange(withHash.toLowerCase());
           }}
+          onBlur={() => setText(value)}
         />
       </div>
     </div>
   );
 }
 
-export function Note({ tone, children, icon }: { tone: 'info' | 'warn' | 'error' | 'ok'; children: ReactNode; icon?: IconName }) {
+/**
+ * Inline message. `live` makes it a live region: errors are announced
+ * assertively (`role=alert`), everything else politely.
+ */
+export function Note({ tone, children, icon, live }: { tone: 'info' | 'warn' | 'error' | 'ok'; children: ReactNode; icon?: IconName; live?: boolean }) {
   const fallback: Record<typeof tone, IconName> = { info: 'info', warn: 'alert', error: 'alert', ok: 'check' };
+  const role = live ? (tone === 'error' ? 'alert' : 'status') : undefined;
   return (
-    <div className={`note note-${tone}`}>
+    <div className={`note note-${tone}`} role={role}>
       <Icon name={icon ?? fallback[tone]} size={18} />
       <div>{children}</div>
     </div>
@@ -196,13 +206,13 @@ export function ConfirmDialog({ open, title, text, confirmLabel, onConfirm, onCa
   }, [open]);
   const titleId = useId();
   return (
-    <dialog ref={ref} aria-labelledby={titleId} onClose={onCancel} onCancel={onCancel}>
+    <dialog ref={ref} aria-labelledby={titleId} onClose={onCancel}>
       <div className="modal">
         <h2 id={titleId}>{title}</h2>
         <p>{text}</p>
         <div className="actions">
           <button type="button" className="btn" onClick={onCancel} autoFocus>{t('common.cancel')}</button>
-          <button type="button" className={danger ? 'btn btn-primary btn-danger-solid' : 'btn btn-primary'} onClick={onConfirm}>{confirmLabel}</button>
+          <button type="button" className={danger ? 'btn btn-danger-solid' : 'btn btn-primary'} onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </dialog>
@@ -210,7 +220,7 @@ export function ConfirmDialog({ open, title, text, confirmLabel, onConfirm, onCa
 }
 
 export function Toasts() {
-  const { toasts, dismissToast } = useStore();
+  const { toasts, dismissToast } = useToasts();
   const { t } = useI18n();
   return (
     <div className="toasts" role="status" aria-live="polite">
@@ -218,11 +228,38 @@ export function Toasts() {
         <div key={toast.id} className={`toast ${toast.tone}`}>
           <Icon name={toast.tone === 'error' ? 'alert' : 'check'} size={18} />
           <span>{toast.text}</span>
-          <button type="button" onClick={() => dismissToast(toast.id)} aria-label={t('common.close')}>
+          {toast.action && (
+            <button type="button" className="toast-action" onClick={() => { toast.action?.run(); dismissToast(toast.id); }}>
+              {toast.action.label}
+            </button>
+          )}
+          <button type="button" className="toast-close" onClick={() => dismissToast(toast.id)} aria-label={t('common.close')}>
             <Icon name="x" size={16} />
           </button>
         </div>
       ))}
     </div>
   );
+}
+
+/** Keeps a render error in one page from blanking the whole app. */
+export class ErrorBoundary extends Component<{ children: ReactNode; fallback: (reset: () => void) => ReactNode; resetKey?: string }, { failed: boolean; key?: string }> {
+  override state: { failed: boolean; key?: string } = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  static getDerivedStateFromProps(props: { resetKey?: string }, state: { failed: boolean; key?: string }) {
+    // Navigating elsewhere clears the error.
+    return props.resetKey !== state.key ? { failed: false, key: props.resetKey } : null;
+  }
+
+  override componentDidCatch(error: Error, info: ErrorInfo) {
+    console.warn('render error', error, info.componentStack);
+  }
+
+  override render() {
+    return this.state.failed ? this.props.fallback(() => this.setState({ failed: false })) : this.props.children;
+  }
 }

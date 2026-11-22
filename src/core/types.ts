@@ -24,7 +24,8 @@ export const CREATE_TYPES: readonly CreateType[] = [
 
 export interface TextContent { type: 'text'; text: string }
 export interface UrlContent { type: 'url'; url: string }
-export type WifiSecurity = 'WPA' | 'WEP' | 'nopass';
+/** `SAE` = WPA3-only networks; `WPA` covers WPA/WPA2 (and WPA2/3 transition). */
+export type WifiSecurity = 'WPA' | 'SAE' | 'WEP' | 'nopass';
 export interface WifiContent {
   type: 'wifi';
   ssid: string;
@@ -106,6 +107,8 @@ export interface QrMatrix {
   mask: number;
   /** Row-major, 1 = dark. */
   dark: Uint8Array;
+  /** Row-major, 1 = function module (finder, timing, alignment, format/version info). */
+  reserved: Uint8Array;
   segments: { mode: SegmentMode; length: number }[];
   /** Data bits actually used (headers + payload, without padding). */
   usedDataBits: number;

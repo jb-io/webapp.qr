@@ -25,6 +25,7 @@ const CSP = [
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
+  "frame-src 'none'",
 ].join('; ');
 
 function csp(): Plugin {
@@ -32,10 +33,13 @@ function csp(): Plugin {
     name: 'csp',
     apply: 'build',
     transformIndexHtml(html) {
-      return html.replace(
+      const out = html.replace(
         '<meta charset="UTF-8" />',
         `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${CSP}" />`,
       );
+      // Never ship silently without the policy.
+      if (out === html) throw new Error('CSP could not be injected into index.html');
+      return out;
     },
   };
 }
@@ -58,14 +62,18 @@ function serviceWorker(): Plugin {
     apply: 'build',
     generateBundle(_options, bundle) {
       const publicDir = new URL('./public/', import.meta.url).pathname;
+      const publicFiles = listFiles(publicDir);
       const files = [
         ...Object.keys(bundle),
-        ...listFiles(publicDir).map((f) => relative(publicDir, f)),
+        ...publicFiles.map((f) => relative(publicDir, f)),
       ].filter((f) => !f.endsWith('.map') && f !== 'sw.js').sort();
+      // The version must change whenever any served byte changes - including
+      // public files and index.html (CSP, manifest, icons).
       const hash = createHash('sha256').update(files.join('\n'));
-      for (const item of Object.values(bundle)) {
-        hash.update(item.type === 'chunk' ? item.code : item.source);
-      }
+      for (const item of Object.values(bundle)) hash.update(item.type === 'chunk' ? item.code : item.source);
+      for (const file of publicFiles) hash.update(readFileSync(file));
+      hash.update(readFileSync(new URL('./index.html', import.meta.url)));
+      hash.update(CSP);
       const template = readFileSync(new URL('./src/sw/sw-template.js', import.meta.url), 'utf8');
       const source = template
         .replace('__VERSION__', hash.digest('hex').slice(0, 12))

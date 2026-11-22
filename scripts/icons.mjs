@@ -24,8 +24,8 @@ for (const t of targets) {
   await page.setViewportSize({ width: t.size, height: t.size });
   const inner = t.size * (1 - 2 * t.pad);
   const body = t.bleed
-    ? `<div style="width:${t.size}px;height:${t.size}px;background:#0f766e;display:grid;place-items:center">
-         <div style="width:${inner}px;height:${inner}px">${svg.replace('fill="url(#g)"', 'fill="none"')}</div></div>`
+    ? `<div style="width:${t.size}px;height:${t.size}px;background:linear-gradient(135deg,#14b8a6,#0f5f58);display:grid;place-items:center">
+         <div style="width:${inner}px;height:${inner}px">${svg.replace('<rect width="512" height="512" rx="112" fill="url(#g)"/>', '')}</div></div>`
     : `<div style="width:${t.size}px;height:${t.size}px">${svg}</div>`;
   await page.setContent(`<html><body style="margin:0;background:transparent">${body}</body></html>`);
   await page.screenshot({ path: `${dir}${t.name}`, omitBackground: true });

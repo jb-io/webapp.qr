@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { Analysis } from '../../core/analysis.ts';
-import { EC_RECOVERY, type QrMatrix } from '../../core/types.ts';
+import { EC_RECOVERY, type QrMatrix, type Severity } from '../../core/types.ts';
 import { Icon, type IconName } from './Icon.tsx';
 import { useI18n, type Key } from '../i18n/index.tsx';
 import { decode, type DecodedCode } from '../lib/decoder.ts';
@@ -12,7 +12,7 @@ import { rasterize } from '../lib/export.ts';
 
 type Status = { state: 'busy' } | { state: 'done'; code: DecodedCode | null } | { state: 'error' };
 
-const SEV_ICON: Record<string, IconName> = { ok: 'check', info: 'info', warn: 'alert', error: 'alert' };
+const SEV_ICON: Record<Severity, IconName> = { ok: 'check', info: 'info', warn: 'alert', error: 'alert' };
 
 /** Numbers in finding parameters follow the UI locale (1,5 cm vs 1.5 cm). */
 function localize(params: Record<string, string | number> | undefined, fmt: (n: number, d?: number) => string) {
@@ -55,68 +55,77 @@ export function VerifyPanel({ svg, aspect, payload, matrix, analysis }: {
 
   const code = status.state === 'done' ? status.code : null;
   const matches = code?.text === payload;
+  const failed = (status.state === 'done' && !matches) || status.state === 'error';
   const quality = status.state === 'done' && !code ? 'poor' : analysis.quality;
   const fillPct = Math.round(analysis.fill * 100);
-  const modes = matrix.segments.map((s) => `${t(`verify.mode.${s.mode}` as Key)} (${s.length})`).join(', ');
+  const modes = matrix.segments.map((s) => `${t(`verify.mode.${s.mode}`)} (${s.length})`).join(', ');
 
   return (
-    <section className="card order-verify" aria-labelledby="verify-title">
+    <section className="card verify" aria-labelledby="verify-title">
       <div className="card-title">
         <Icon name="shield" />
         <h2 id="verify-title">{t('verify.title')}</h2>
-        <span className={`badge badge-${quality === 'good' ? 'ok' : quality === 'fair' ? 'warn' : 'error'}`} style={{ marginLeft: 'auto' }}>
-          {t('verify.quality')}: {t(`verify.${quality}` as Key)}
+        <span className={`badge badge-${quality === 'good' ? 'ok' : quality === 'fair' ? 'warn' : 'error'} push-right`}>
+          {t('verify.quality')}: {t(`verify.${quality}`)}
         </span>
       </div>
 
-      <div aria-live="polite">
-        {status.state === 'busy' && (
-          <div className="verify-status busy"><Icon name="scan" />{t('verify.running')}</div>
-        )}
-        {status.state === 'done' && code && (
-          <div className={`verify-status ${matches ? 'ok' : 'fail'}`}>
-            <Icon name={matches ? 'check' : 'alert'} />
-            {matches ? t('verify.ok') : t('verify.mismatch')}
-            <small>{t('verify.engine')}</small>
+      {status.state === 'busy' && <div className="verify-status busy"><Icon name="scan" />{t('verify.running')}</div>}
+      {status.state === 'done' && matches && (
+        <div className="verify-status ok">
+          <Icon name="check" />
+          <span>{t('verify.ok')}</span>
+          <small>{t('verify.engine')}</small>
+        </div>
+      )}
+      {/* Only problems are announced - not every pause while typing. */}
+      <div role="alert">
+        {failed && (
+          <div className="verify-status fail">
+            <Icon name="alert" />
+            <span>{code ? t('verify.mismatch') : t('verify.fail')}</span>
           </div>
         )}
-        {((status.state === 'done' && !code) || status.state === 'error') && (
-          <div className="verify-status fail"><Icon name="alert" />{t('verify.fail')}</div>
-        )}
       </div>
-
-      <dl className="kv">
-        <dt>{t('verify.version')}</dt>
-        <dd>{t('verify.versionValue', { version: matrix.version, size: matrix.size })}</dd>
-        <dt>{t('verify.ecLevel')}</dt>
-        <dd>{t('verify.ecValue', { level: matrix.ecLevel, percent: Math.round(EC_RECOVERY[matrix.ecLevel] * 100) })}</dd>
-        <dt>{t('verify.mask')}</dt>
-        <dd>{matrix.mask}</dd>
-        <dt>{t('verify.encoding')}</dt>
-        <dd>{modes}</dd>
-        <dt>{t('verify.data')}</dt>
-        <dd>
-          {t('verify.dataValue', { used: formatNumber(matrix.usedDataBits), capacity: formatNumber(matrix.capacityDataBits), percent: fillPct })}
-          <div className="meter" role="img" aria-label={`${fillPct} %`}><span style={{ width: `${Math.min(100, fillPct)}%` }} /></div>
-        </dd>
-        <dt>{t('verify.codewords')}</dt>
-        <dd>{t('verify.codewordsValue', { total: matrix.totalCodewords, ec: matrix.ecCodewords, blocks: matrix.ecBlocks })}</dd>
-        {code && code.uec >= 0 && (
-          <>
-            <dt title={t('verify.reserveHelp')}>{t('verify.reserve')}</dt>
-            <dd>{formatNumber(code.uec * 100)} %</dd>
-          </>
-        )}
-      </dl>
 
       <ul className="findings">
         {analysis.findings.map((f) => (
           <li key={f.code} className={`sev-${f.severity}`}>
-            <Icon name={SEV_ICON[f.severity] ?? 'info'} size={16} />
+            <Icon name={SEV_ICON[f.severity]} size={16} />
             <span>{t(`finding.${f.code}` as Key, localize(f.params, formatNumber))}</span>
           </li>
         ))}
       </ul>
+
+      <details className="raw tech">
+        <summary>{t('verify.details')}</summary>
+        <dl className="kv">
+          <dt>{t('verify.version')}</dt>
+          <dd>{t('verify.versionValue', { version: matrix.version, size: matrix.size })}</dd>
+          <dt>{t('verify.ecLevel')}</dt>
+          <dd>{t('verify.ecValue', { level: matrix.ecLevel, percent: Math.round(EC_RECOVERY[matrix.ecLevel] * 100) })}</dd>
+          <dt>{t('verify.mask')}</dt>
+          <dd>{matrix.mask}</dd>
+          <dt>{t('verify.encoding')}</dt>
+          <dd>{modes}</dd>
+          <dt>{t('verify.data')}</dt>
+          <dd>
+            {t('verify.dataValue', { used: formatNumber(matrix.usedDataBits), capacity: formatNumber(matrix.capacityDataBits), percent: fillPct })}
+            <div className="meter" role="img" aria-label={`${fillPct} %`}><span style={{ width: `${Math.min(100, fillPct)}%` }} /></div>
+          </dd>
+          <dt>{t('verify.codewords')}</dt>
+          <dd>{t('verify.codewordsValue', { total: matrix.totalCodewords, ec: matrix.ecCodewords, blocks: matrix.ecBlocks })}</dd>
+          {code && code.uec >= 0 && (
+            <>
+              <dt>{t('verify.reserve')}</dt>
+              <dd>
+                {formatNumber(code.uec * 100)} %
+                <span className="hint">{t('verify.reserveHelp')}</span>
+              </dd>
+            </>
+          )}
+        </dl>
+      </details>
     </section>
   );
 }

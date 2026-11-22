@@ -1,11 +1,12 @@
 /** Design and technical options of the generator, as collapsible sections. */
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { DEFAULT_STYLE, EC_LEVELS } from '../../core/types.ts';
 import type { CreateType, EcLevel, EyeShape, MatrixOptions, QrStyle } from '../../core/types.ts';
 import { ColorField, Note, Segmented, Select, TextField, Toggle } from './ui.tsx';
 import { Icon } from './Icon.tsx';
 import { useI18n, type Key } from '../i18n/index.tsx';
-import { useStore } from '../state/Store.tsx';
+import { useToasts } from '../state/Store.tsx';
+import { requiredEcLevel } from '../../core/payloads.ts';
 import { logoToDataUrl } from '../lib/export.ts';
 
 const PRESETS: { fg: string; bg: string }[] = [
@@ -22,14 +23,16 @@ interface Props {
   options: MatrixOptions;
   type: CreateType;
   onStyle: (patch: Partial<QrStyle>) => void;
-  onOptions: (patch: Partial<MatrixOptions>) => void;
+  onOptions: (patch: Partial<MatrixOptions> | ((o: MatrixOptions) => Partial<MatrixOptions>)) => void;
 }
 
 export function StylePanel({ style, options, type, onStyle, onOptions }: Props) {
   const { t } = useI18n();
-  const { notify } = useStore();
+  const { notify } = useToasts();
   const fileRef = useRef<HTMLInputElement>(null);
-  const ecLocked = type === 'epc';
+  // Phones start with every section collapsed - the code preview matters more.
+  const [wide] = useState(() => typeof matchMedia === 'function' && matchMedia('(min-width: 900px)').matches);
+  const ecLocked = requiredEcLevel(type) !== null;
 
   const eyeOptions = (prefix: string) => (['square', 'rounded', 'circle'] as EyeShape[]).map((v) => ({
     value: v, label: t(v === 'circle' ? 'style.circle' : (`style.${v}` as Key)), key: prefix + v,
@@ -39,7 +42,8 @@ export function StylePanel({ style, options, type, onStyle, onOptions }: Props) 
     try {
       const logo = await logoToDataUrl(file);
       onStyle({ logo });
-      if (!ecLocked && (options.ecLevel === 'L' || options.ecLevel === 'M')) onOptions({ ecLevel: 'H' });
+      // A logo hides modules: raise the error correction (unless the content type fixes it).
+      if (!ecLocked) onOptions((o) => (o.ecLevel === 'L' || o.ecLevel === 'M' ? { ecLevel: 'H' } : {}));
     } catch {
       notify('style.logoError', 'error');
     }
@@ -47,28 +51,29 @@ export function StylePanel({ style, options, type, onStyle, onOptions }: Props) 
 
   return (
     <div>
-      <details className="section" open>
+      <details className="section" open={wide}>
         <summary>{t('style.colors')}</summary>
         <div className="stack">
           <div className="field">
             <span className="field-label" id="presets-label">{t('style.presets')}</span>
             <div className="swatches" role="group" aria-labelledby="presets-label">
-              {PRESETS.map((p) => (
+              {PRESETS.map((p, i) => (
                 <button
                   key={p.fg + p.bg}
                   type="button"
                   className="swatch"
                   style={{ background: p.bg }}
-                  aria-label={`${p.fg} / ${p.bg}`}
+                  aria-label={t(`preset.${i}` as Key)}
+                  title={t(`preset.${i}` as Key)}
                   aria-pressed={style.foreground === p.fg && style.background === p.bg}
                   onClick={() => onStyle({ foreground: p.fg, background: p.bg, frameColor: p.fg })}
                 >
-                  <i style={{ background: p.fg }} />
+                  <i style={{ background: p.fg }} aria-hidden="true" />
                 </button>
               ))}
               <button
                 type="button"
-                className="swatch"
+                className="btn btn-icon btn-sm btn-ghost swap"
                 aria-label={t('style.swap')}
                 title={t('style.swap')}
                 onClick={() => onStyle({ foreground: style.background, background: style.foreground })}

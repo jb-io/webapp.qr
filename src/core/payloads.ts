@@ -6,6 +6,7 @@
 import type {
   ContactContent, CreateContent, CreateType, EpcContent, EventContent,
 } from './types.ts';
+import { encodeStrict, singleLine } from './text.ts';
 
 /** A validation problem; `code` is an i18n key suffix. */
 export interface FieldError { field: string; code: string }
@@ -45,6 +46,9 @@ export function escapeVText(value: string): string {
 
 const compactPhone = (value: string): string => value.replace(/[^\d+*#]/g, '');
 
+/** `52,52` -> `52.52`; anything that is not a plain decimal stays as typed (validation rejects it). */
+export const normalizeCoordinate = (value: string): string => value.trim().replace(',', '.');
+
 // ------------------------------------------------------------ building
 
 export function buildPayload(content: CreateContent): string {
@@ -73,9 +77,9 @@ export function buildPayload(content: CreateContent): string {
     case 'phone':
       return `tel:${compactPhone(content.number)}`;
     case 'geo': {
-      const coords = `${content.latitude.trim()},${content.longitude.trim()}`;
+      const coords = `${normalizeCoordinate(content.latitude)},${normalizeCoordinate(content.longitude)}`;
       return content.label.trim()
-        ? `geo:${coords}?q=${coords}(${encodeURIComponent(content.label.trim())})`
+        ? `geo:${coords}?q=${coords}(${encodeStrict(singleLine(content.label.trim()))})`
         : `geo:${coords}`;
     }
     case 'event':
@@ -99,10 +103,11 @@ function buildVCard(c: ContactContent): string {
   lines.push(`FN:${escapeVText(full || c.organization.trim())}`);
   if (c.organization.trim()) lines.push(`ORG:${escapeVText(c.organization.trim())}`);
   if (c.title.trim()) lines.push(`TITLE:${escapeVText(c.title.trim())}`);
-  if (c.phone.trim()) lines.push(`TEL;TYPE=WORK,VOICE:${c.phone.trim()}`);
-  if (c.mobile.trim()) lines.push(`TEL;TYPE=CELL:${c.mobile.trim()}`);
-  if (c.email.trim()) lines.push(`EMAIL:${c.email.trim()}`);
-  if (c.website.trim()) lines.push(`URL:${normalizeUrl(c.website)}`);
+  // Unescaped single-value properties must not smuggle in line breaks.
+  if (c.phone.trim()) lines.push(`TEL;TYPE=WORK,VOICE:${singleLine(c.phone.trim())}`);
+  if (c.mobile.trim()) lines.push(`TEL;TYPE=CELL:${singleLine(c.mobile.trim())}`);
+  if (c.email.trim()) lines.push(`EMAIL:${singleLine(c.email.trim())}`);
+  if (c.website.trim()) lines.push(`URL:${singleLine(normalizeUrl(c.website))}`);
   if ([c.street, c.postalCode, c.city, c.country].some((s) => s.trim())) {
     const adr = ['', '', c.street, c.city, '', c.postalCode, c.country].map((s) => escapeVText(s.trim()));
     lines.push(`ADR;TYPE=WORK:${adr.join(';')}`);
@@ -121,12 +126,20 @@ export function toICalDate(value: string, allDay: boolean): string {
   return `${d}T${t}`;
 }
 
+/** `2026-11-22` + n days, calendar-correct. */
+export function addDays(date: string, days: number): string {
+  const [y = 0, m = 1, d = 1] = date.slice(0, 10).split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+}
+
 function buildEvent(c: EventContent): string {
   const dt = (name: string, value: string) => (c.allDay
     ? `${name};VALUE=DATE:${toICalDate(value, true)}`
     : `${name}:${toICalDate(value, false)}`);
   const lines = ['BEGIN:VEVENT', `SUMMARY:${escapeVText(c.title.trim())}`, dt('DTSTART', c.start)];
-  if (c.end) lines.push(dt('DTEND', c.end));
+  // All-day DTEND is exclusive (RFC 5545): the form's "last day" + 1.
+  if (c.end) lines.push(dt('DTEND', c.allDay ? addDays(c.end, 1) : c.end));
   if (c.location.trim()) lines.push(`LOCATION:${escapeVText(c.location.trim())}`);
   if (c.description.trim()) lines.push(`DESCRIPTION:${escapeVText(c.description.trim())}`);
   lines.push('END:VEVENT');
@@ -147,12 +160,12 @@ function buildEpc(c: EpcContent): string {
   const lines = [
     'BCD', '002', '1', 'SCT',
     c.bic.replace(/\s+/g, '').toUpperCase(),
-    c.name.trim(),
+    singleLine(c.name.trim()),
     compactIban(c.iban),
     epcAmount(c.amount),
     '', // purpose code
-    c.reference.trim(),
-    c.text.trim(),
+    singleLine(c.reference.trim()),
+    singleLine(c.text.trim()),
   ];
   // Trailing empty fields may be omitted (EPC069-12, 3.4).
   while (lines.length > 7 && lines[lines.length - 1] === '') lines.pop();
@@ -178,9 +191,13 @@ const isEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 const isPhone = (v: string) => /^\+?[\d\s()/.-]{3,}$/.test(v.trim());
 
 function inRange(value: string, limit: number): boolean {
-  const n = Number(value.trim().replace(',', '.'));
-  return value.trim() !== '' && Number.isFinite(n) && Math.abs(n) <= limit;
+  const v = normalizeCoordinate(value);
+  return /^-?\d{1,3}(\.\d+)?$/.test(v) && Math.abs(Number(v)) <= limit;
 }
+
+/** EPC069-12: the whole payload must not exceed 331 bytes. */
+export const EPC_MAX_BYTES = 331;
+const utf8Length = (v: string) => new TextEncoder().encode(v).length;
 
 /** Returns all problems; an empty list means the content can be encoded. */
 export function validateContent(c: CreateContent): FieldError[] {
@@ -205,7 +222,10 @@ export function validateContent(c: CreateContent): FieldError[] {
     case 'wifi':
       need('ssid', c.ssid);
       if (c.security !== 'nopass') need('password', c.password);
-      if (c.security === 'WPA' && c.password && (c.password.length < 8 || c.password.length > 63)) {
+      // WPA/WPA3 passphrases: 8-63 bytes, or exactly 64 hex digits (raw PSK).
+      if ((c.security === 'WPA' || c.security === 'SAE') && c.password
+        && !/^[\da-f]{64}$/i.test(c.password)
+        && (utf8Length(c.password) < 8 || utf8Length(c.password) > 63)) {
         errors.push({ field: 'password', code: 'wpaLength' });
       }
       break;
@@ -250,6 +270,7 @@ export function validateContent(c: CreateContent): FieldError[] {
       if (c.reference.trim() && c.text.trim()) errors.push({ field: 'text', code: 'referenceOrText' });
       if (c.reference.length > 35) errors.push({ field: 'reference', code: 'tooLong' });
       if (c.text.length > 140) errors.push({ field: 'text', code: 'tooLong' });
+      if (!errors.length && utf8Length(buildEpc(c)) > EPC_MAX_BYTES) errors.push({ field: 'text', code: 'epcTooLong' });
       break;
     }
   }

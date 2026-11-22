@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Icon, type IconName } from './components/Icon.tsx';
-import { Toasts } from './components/ui.tsx';
+import { ErrorBoundary, Toasts } from './components/ui.tsx';
 import { useI18n, type Key } from './i18n/index.tsx';
 import { useStore, type Route } from './state/Store.tsx';
 import { CreatePage } from './pages/CreatePage.tsx';
@@ -38,7 +38,11 @@ function useUpdateBanner(): (() => void) | null {
   useEffect(() => {
     const onUpdate = (event: Event) => {
       const worker = (event as CustomEvent<ServiceWorker>).detail;
-      setApply(() => () => worker.postMessage('skipWaiting'));
+      setApply(() => () => {
+        // main.tsx reloads on controllerchange only when this flag is set.
+        (window as unknown as { __reloadOnUpdate?: boolean }).__reloadOnUpdate = true;
+        worker.postMessage('skipWaiting');
+      });
     };
     window.addEventListener('sw-update', onUpdate);
     return () => window.removeEventListener('sw-update', onUpdate);
@@ -51,10 +55,12 @@ export function App() {
   const { t } = useI18n();
   const update = useUpdateBanner();
 
-  // Move focus to the page heading on navigation (screen readers, keyboard).
+  // Move focus to the page heading on navigation (screen readers, keyboard) -
+  // unless the page already placed focus itself (child effects run first).
   useEffect(() => {
     const h1 = document.querySelector<HTMLElement>('main h1');
-    if (h1 && document.activeElement !== document.body) {
+    const main = document.querySelector('main');
+    if (h1 && document.activeElement !== document.body && !main?.contains(document.activeElement)) {
       h1.tabIndex = -1;
       h1.focus({ preventScroll: true });
     }
@@ -69,6 +75,7 @@ export function App() {
         {t('app.skip')}
       </a>
       <header className="topbar">
+        <div className="topbar-inner">
         <a className="brand" href="#/scan">
           <img src="./icons/icon.svg" alt="" width={32} height={32} />
           <span>
@@ -77,23 +84,36 @@ export function App() {
           </span>
         </a>
         <NavLinks className="nav" current={current} />
+        </div>
       </header>
 
       {update && (
-        <div className="note note-info" role="status" style={{ margin: '12px 16px 0', alignItems: 'center' }}>
+        <div className="note note-info update-banner" role="status">
           <Icon name="info" size={18} />
           <span>{t('app.update')}</span>
-          <button type="button" className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={update}>{t('app.updateNow')}</button>
+          <button type="button" className="btn btn-sm btn-primary push-right" onClick={update}>{t('app.updateNow')}</button>
         </div>
       )}
 
       <main id="main" className="main" tabIndex={-1}>
-        {route === 'scan' && <ScanPage />}
-        {route === 'create' && <CreatePage />}
-        {route === 'history' && <HistoryPage />}
-        {route === 'settings' && <SettingsPage />}
-        {route === 'privacy' && <PrivacyPage />}
-        {route === 'shared' && <SharedPage />}
+        <ErrorBoundary
+          resetKey={route}
+          fallback={() => (
+            <div className="stack">
+              <div className="note note-error" role="alert"><Icon name="alert" size={18} /><span>{t('common.crashed')}</span></div>
+              <div className="actions">
+                <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>{t('common.reload')}</button>
+              </div>
+            </div>
+          )}
+        >
+          {route === 'scan' && <ScanPage />}
+          {route === 'create' && <CreatePage />}
+          {route === 'history' && <HistoryPage />}
+          {route === 'settings' && <SettingsPage />}
+          {route === 'privacy' && <PrivacyPage />}
+          {route === 'shared' && <SharedPage />}
+        </ErrorBoundary>
       </main>
 
       <footer className="footer">

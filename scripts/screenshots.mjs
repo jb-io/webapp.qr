@@ -62,7 +62,7 @@ async function createUrl(page) {
 {
   const { context, page } = await open(true, 'dark');
   await createUrl(page);
-  await page.locator('.order-verify').scrollIntoViewIfNeeded();
+  await page.locator('.verify').scrollIntoViewIfNeeded();
   await shot(page, '05-verify-mobile-dark');
   await context.close();
 }

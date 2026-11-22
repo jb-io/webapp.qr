@@ -8,6 +8,7 @@ import { sharedToContent, textToContent, vcardToContact } from '../../core/conve
 import { DEFAULT_OPTIONS } from '../../core/history.ts';
 import { requiredEcLevel } from '../../core/payloads.ts';
 import type { CreateContent } from '../../core/types.ts';
+import { Icon } from '../components/Icon.tsx';
 import { Note } from '../components/ui.tsx';
 import { useI18n } from '../i18n/index.tsx';
 import { useStore } from '../state/Store.tsx';
@@ -16,48 +17,69 @@ import { isCalendar, isImage, isText, isVcard, takeSharedData } from '../lib/sha
 export function SharedPage() {
   const { t } = useI18n();
   const { loadDraft, navigate, setPendingImage, draft } = useStore();
-  const [empty, setEmpty] = useState(false);
+  const [state, setState] = useState<'loading' | 'empty' | 'error'>('loading');
   const done = useRef(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     if (done.current) return;
     done.current = true;
     (async () => {
-      const data = await takeSharedData().catch(() => null);
-      // Drop `?shared=1` so a reload does not re-run the import.
-      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
-      if (!data) {
-        setEmpty(true);
-        return;
+      try {
+        const failed = new URLSearchParams(window.location.search).get('shared') === 'error';
+        const data = await takeSharedData();
+        // Drop `?shared=…` so a reload does not re-run the import.
+        window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+        if (failed) {
+          setState('error');
+          return;
+        }
+        if (!data) {
+          setState('empty');
+          return;
+        }
+        const image = data.files.find(isImage);
+        if (image) {
+          setPendingImage({ file: image.blob, name: image.name });
+          navigate('scan');
+          return;
+        }
+        let content: CreateContent | null = null;
+        const vcf = data.files.find(isVcard);
+        const ics = data.files.find(isCalendar);
+        const txt = data.files.find(isText);
+        if (vcf) content = vcardToContact(await vcf.blob.text());
+        else if (ics) content = textToContent(await ics.blob.text());
+        else if (txt) content = textToContent(await txt.blob.text());
+        else if (data.text || data.url || data.title) content = sharedToContent(data);
+        if (!content) {
+          setState('empty');
+          return;
+        }
+        const forced = requiredEcLevel(content.type);
+        const { style, options } = draftRef.current;
+        loadDraft({ content, style, options: forced ? { ...DEFAULT_OPTIONS, ecLevel: forced } : options, origin: 'share' });
+        navigate('create');
+      } catch {
+        setState('error');
       }
-      const image = data.files.find(isImage);
-      if (image) {
-        setPendingImage({ file: image.blob, name: image.name });
-        navigate('scan');
-        return;
-      }
-      let content: CreateContent | null = null;
-      const vcf = data.files.find(isVcard);
-      const ics = data.files.find(isCalendar);
-      const txt = data.files.find(isText);
-      if (vcf) content = vcardToContact(await vcf.blob.text());
-      else if (ics) content = textToContent(await ics.blob.text());
-      else if (txt) content = textToContent(await txt.blob.text());
-      else if (data.text || data.url || data.title) content = sharedToContent(data);
-      if (!content) {
-        setEmpty(true);
-        return;
-      }
-      const forced = requiredEcLevel(content.type);
-      loadDraft({ content, style: draft.style, options: forced ? { ...DEFAULT_OPTIONS, ecLevel: forced } : draft.options, origin: 'share' });
-      navigate('create');
     })();
-  }, [loadDraft, navigate, setPendingImage, draft.style, draft.options]);
+  }, [loadDraft, navigate, setPendingImage]);
 
   return (
     <>
       <div className="page-head"><h1>{t('shared.title')}</h1></div>
-      {empty ? <Note tone="info">{t('shared.empty')}</Note> : <p className="muted" role="status">{t('shared.loading')}</p>}
+      {state === 'loading' && <p className="muted" role="status">{t('shared.loading')}</p>}
+      {state !== 'loading' && (
+        <div className="stack">
+          <Note tone={state === 'error' ? 'error' : 'info'} live>{state === 'error' ? t('shared.error') : t('shared.empty')}</Note>
+          <div className="actions">
+            <a className="btn btn-primary" href="#/scan"><Icon name="scan" size={18} />{t('nav.scan')}</a>
+            <a className="btn" href="#/create"><Icon name="qr" size={18} />{t('nav.create')}</a>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -27,10 +27,21 @@ export interface Layout {
 const LABEL_SCALE = { s: 0.065, m: 0.085, l: 0.105 } as const;
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
+/** Allowed logo edge length relative to the symbol width. */
+export const LOGO_MIN = 0.1;
+export const LOGO_MAX = 0.3;
+
+/** Rough rendered width in em: wide glyphs (CJK, emoji) take a full em. */
+export const textWidthEm = (text: string): number =>
+  [...text].reduce((sum, ch) => sum + ((ch.codePointAt(0) ?? 0) >= 0x2e80 ? 1 : 0.58), 0);
+
 const fmt = (n: number): string => String(Math.round(n * 1000) / 1000);
 
+/** XML-escapes text and drops characters XML 1.0 does not allow at all. */
 export function escapeXml(value: string): string {
   return value
+    // C0 controls (except tab/LF/CR) and U+FFFE/U+FFFF are invalid in XML.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -40,7 +51,7 @@ export function escapeXml(value: string): string {
 
 /** Logo box aligned to the module grid so that it is exactly centred. */
 export function logoBoxFor(size: number, ratio: number): { start: number; size: number } {
-  let box = Math.max(3, Math.round(size * Math.min(0.35, Math.max(0.05, ratio))));
+  let box = Math.max(3, Math.round(size * Math.min(LOGO_MAX, Math.max(LOGO_MIN, ratio))));
   if ((size - box) % 2 !== 0) box += 1;
   return { start: (size - box) / 2, size: box };
 }
@@ -193,7 +204,7 @@ export function renderSvg(m: QrMatrix, s: QrStyle, pixelWidth?: number): RenderR
     const color = s.labelColor || (s.frame === 'banner' ? bg : fg);
     const available = W - 2 * L.frameWidth - L.fontSize;
     // Rough width estimate; squeeze long labels instead of clipping them.
-    const estimate = [...label].length * L.fontSize * 0.58;
+    const estimate = textWidthEm(label) * L.fontSize;
     const squeeze = estimate > available ? ` textLength="${fmt(available)}" lengthAdjust="spacingAndGlyphs"` : '';
     out.push(`<text x="${fmt(W / 2)}" y="${fmt(L.labelY)}" fill="${escapeXml(color)}" font-family='${FONT}' font-size="${fmt(L.fontSize)}" font-weight="600" text-anchor="middle" dominant-baseline="central"${squeeze}>${escapeXml(label)}</text>`);
   }

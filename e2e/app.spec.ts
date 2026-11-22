@@ -59,7 +59,7 @@ test('framed code with label and logo still verifies', async ({ page }) => {
   await page.getByText('Logo / Bild in der Mitte').click();
   const icon = await readFile(new URL('../public/icons/icon-192.png', import.meta.url));
   await page.locator('input[type=file][accept*="image/png"]').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: icon });
-  await expect(page.getByText(/^Bild verdeckt \d+ %/)).toBeVisible();
+  await expect(page.getByText(/^Bild (verdeckt|belegt) /)).toBeVisible();
   await expect(page.getByText('Lesbar – Inhalt stimmt überein')).toBeVisible();
 });
 
@@ -97,10 +97,46 @@ test('history entries can be inspected and deleted', async ({ page }) => {
   await expect(page.locator('.raw-view pre').nth(1)).toContainText('https://example.org/x');
   await page.getByRole('button', { name: /^Löschen: / }).click();
   await expect(page.getByText('Noch keine erstellten Codes.')).toBeVisible();
+  await page.getByRole('button', { name: 'Rückgängig' }).click();
+  await expect(page.getByText('Erstellt (1)')).toBeVisible();
 });
 
 test('english UI via settings', async ({ page }) => {
   await page.goto('/#/settings');
   await page.getByLabel('Sprache').selectOption('en');
   await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+});
+
+async function scanGenerated(page: import('@playwright/test').Page, text: string, outPath: string) {
+  await page.goto('/#/create');
+  await page.getByRole('radio', { name: 'Text' }).check();
+  await page.getByRole('textbox', { name: 'Text' }).fill(text);
+  await expect(page.getByText('Lesbar – Inhalt stimmt überein')).toBeVisible();
+  const [d] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /Herunterladen/ }).click()]);
+  await d.saveAs(outPath);
+  await page.goto('/#/scan');
+  await page.locator('input[type=file]').setInputFiles(outPath);
+}
+
+test('two-factor secrets are shown masked and never stored', async ({ page }, info) => {
+  await scanGenerated(page, 'otpauth://totp/Acme:me?secret=JBSWY3DPEHPK3PXP&issuer=Acme', info.outputPath('otp.png'));
+  await expect(page.getByRole('heading', { name: 'Zwei-Faktor-Schlüssel', level: 2 })).toBeVisible();
+  await expect(page.getByText('JBSWY3DPEHPK3PXP')).toHaveCount(0);
+  await expect(page.getByText(/nicht im Verlauf gespeichert/)).toBeVisible();
+  const stored = await page.evaluate(() => JSON.stringify(JSON.parse(localStorage.getItem('webapp.qr.history.v1') ?? '{}').scans ?? []));
+  expect(stored).not.toContain('JBSWY3DPEHPK3PXP');
+});
+
+test('a malformed code does not break the scanner', async ({ page }, info) => {
+  await scanGenerated(page, 'mailto:%E0%A4%A?bcc=x@example.org', info.outputPath('bad.png'));
+  await expect(page.getByRole('heading', { name: 'E-Mail', level: 2 })).toBeVisible();
+  await expect(page.getByText('Die E-Mail enthält versteckte Empfänger (BCC).')).toBeVisible();
+});
+
+test('switching types keeps the input per type', async ({ page }) => {
+  await page.goto('/#/create');
+  await page.getByLabel('Adresse (URL)').fill('https://example.org/keep');
+  await page.getByRole('radio', { name: 'Text' }).check();
+  await page.getByRole('radio', { name: 'Link' }).check();
+  await expect(page.getByLabel('Adresse (URL)')).toHaveValue('https://example.org/keep');
 });

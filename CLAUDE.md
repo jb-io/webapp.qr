@@ -46,9 +46,13 @@ deleted.
    are masked.
 4. **Storage is transparent.** Only the keys in `lib/storage.ts → OWN_KEYS`
    are written; anything new must be listed there, shown in the history raw
-   view, described in the privacy page (`pages/PrivacyPage.tsx`) and go
-   through a `normalize*` function in `core/history.ts`.
-5. **Every new UI string** goes into `i18n/de.ts` and `i18n/en.ts` (the `Dict`
+   view, described in the privacy page (`pages/PrivacyPage.tsx`, update its
+   `STAND` date) and go through a `normalize*` function in `core/history.ts`.
+5. **Secrets stay out of storage and metadata.** OTP scans are never stored;
+   exports carry no content in metadata (PDF title, file names).
+6. **Shared origin.** `jb-io.github.io` hosts several projects: only touch
+   caches prefixed `qr-lokal-` and the service worker of our own scope.
+7. **Every new UI string** goes into `i18n/de.ts` and `i18n/en.ts` (the `Dict`
    type fails the build otherwise).
 
 ## Structure

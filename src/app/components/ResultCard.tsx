@@ -2,15 +2,14 @@
  * Shows one decoded code: what it is, what it contains, warnings - and only
  * then the actions. Nothing is opened or executed automatically.
  */
-import { useState, type ReactElement } from 'react';
+import { useId, useMemo, useState, type ReactElement } from 'react';
 import { parseContent, toIcsFile, toVcfFile, type ParsedContent } from '../../core/parse.ts';
-import { textToContent } from '../../core/convert.ts';
 import { DEFAULT_OPTIONS } from '../../core/history.ts';
 import { requiredEcLevel } from '../../core/payloads.ts';
 import { Icon, TYPE_ICONS } from './Icon.tsx';
 import { Note } from './ui.tsx';
 import { useI18n, type Key } from '../i18n/index.tsx';
-import { useStore } from '../state/Store.tsx';
+import { useStore, useToasts } from '../state/Store.tsx';
 import { canShare, copyText, downloadText, share } from '../lib/export.ts';
 import type { DecodedCode } from '../lib/decoder.ts';
 
@@ -20,6 +19,8 @@ const FORMAT_LABELS: Record<string, string> = {
   Code39: 'Code 39', Code93: 'Code 93', ITF: 'ITF', Codabar: 'Codabar', MaxiCode: 'MaxiCode', ISBN: 'ISBN',
 };
 export const formatLabel = (f: string): string => FORMAT_LABELS[f] ?? f;
+
+const SECURITY_LABEL: Record<string, Key> = { WPA: 'field.wpa', SAE: 'field.sae', WEP: 'field.wep', nopass: 'field.nopass' };
 
 function Secret({ value }: { value: string }) {
   const { t } = useI18n();
@@ -35,14 +36,20 @@ function Secret({ value }: { value: string }) {
   );
 }
 
-const FIELD_KEYS: Record<string, Key> = {
-  title: 'field.eventTitle', text: 'field.text', label: 'field.label',
-};
+/** Safe `tel:` href: only dial characters, `#` percent-encoded. */
+const telHref = (n: string) => `tel:${n.replace(/[^\d+*#]/g, '').replace(/#/g, '%23')}`;
 
-export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; headingLevel?: 2 | 3 }) {
+export function ResultCard({ code, headingLevel = 2, saved }: {
+  code: DecodedCode;
+  headingLevel?: 2 | 3;
+  /** Whether the scan was written to the history (shown as a hint). */
+  saved?: boolean;
+}) {
   const { t } = useI18n();
-  const { notify, loadDraft, navigate, draft } = useStore();
-  const parsed: ParsedContent = parseContent(code.text, code.format);
+  const { loadDraft, navigate, draft } = useStore();
+  const { notify } = useToasts();
+  const headingId = useId();
+  const parsed: ParsedContent = useMemo(() => parseContent(code.text, code.format), [code.text, code.format]);
   const get = (key: string) => parsed.fields.find((f) => f.key === key)?.value ?? '';
   const Heading = headingLevel === 2 ? 'h2' : 'h3';
 
@@ -56,15 +63,15 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
   };
 
   const edit = () => {
-    const content = textToContent(code.text);
-    const forced = requiredEcLevel(content.type);
-    loadDraft({ content, style: draft.style, options: forced ? { ...DEFAULT_OPTIONS, ecLevel: forced } : DEFAULT_OPTIONS, origin: 'scan' });
+    if (!parsed.content) return;
+    const forced = requiredEcLevel(parsed.content.type);
+    loadDraft({ content: parsed.content, style: draft.style, options: forced ? { ...DEFAULT_OPTIONS, ecLevel: forced } : DEFAULT_OPTIONS, origin: 'scan' });
     navigate('create');
   };
 
-  const fieldLabel = (key: string) => t(FIELD_KEYS[key] ?? (`field.${key}` as Key));
   const url = parsed.url;
   const primary: ReactElement[] = [];
+  const number = get('number');
 
   switch (parsed.type) {
     case 'url':
@@ -78,20 +85,25 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
       }
       break;
     case 'phone':
-      primary.push(<a key="call" className="btn btn-primary" href={`tel:${get('number')}`}><Icon name="phone" size={18} />{t('result.call')}</a>);
+      primary.push(<a key="call" className="btn btn-primary" href={telHref(number)}><Icon name="phone" size={18} />{t('result.call')}</a>);
       break;
     case 'sms':
       primary.push(
-        <a key="sms" className="btn btn-primary" href={`sms:${get('number')}${get('message') ? `?body=${encodeURIComponent(get('message'))}` : ''}`}>
+        <a key="sms" className="btn btn-primary" href={`sms:${number.replace(/[^\d+]/g, '')}${get('message') ? `?body=${encodeURIComponent(get('message'))}` : ''}`}>
           <Icon name="sms" size={18} />
           {t('result.sendSms')}
         </a>,
       );
       break;
     case 'email': {
-      const href = /^mailto:/i.test(code.text.trim()) ? code.text.trim()
-        : `mailto:${get('to')}?subject=${encodeURIComponent(get('subject'))}&body=${encodeURIComponent(get('body'))}`;
-      primary.push(<a key="mail" className="btn btn-primary" href={href}><Icon name="mail" size={18} />{t('result.sendMail')}</a>);
+      // Rebuilt only from the displayed fields - no hidden parameters reach the mail app.
+      const query = [
+        get('cc') && `cc=${encodeURIComponent(get('cc'))}`,
+        get('bcc') && `bcc=${encodeURIComponent(get('bcc'))}`,
+        get('subject') && `subject=${encodeURIComponent(get('subject'))}`,
+        get('body') && `body=${encodeURIComponent(get('body'))}`,
+      ].filter(Boolean).join('&');
+      primary.push(<a key="mail" className="btn btn-primary" href={`mailto:${encodeURIComponent(get('to')).replace(/%40/g, '@').replace(/%2C/gi, ',')}${query ? `?${query}` : ''}`}><Icon name="mail" size={18} />{t('result.sendMail')}</a>);
       break;
     }
     case 'contact':
@@ -104,7 +116,7 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
       break;
     case 'event':
       primary.push(
-        <button key="ics" type="button" className="btn btn-primary" onClick={() => downloadText(toIcsFile(code.text), `${(get('title') || 'event').replace(/[^\w-]+/g, '_')}.ics`, 'text/calendar')}>
+        <button key="ics" type="button" className="btn btn-primary" onClick={() => downloadText(toIcsFile(code.text), `${(get('eventTitle') || 'event').replace(/[^\w-]+/g, '_')}.ics`, 'text/calendar')}>
           <Icon name="calendar" size={18} />
           {t('result.saveEvent')}
         </button>,
@@ -134,28 +146,30 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
       break;
   }
 
-  const editable = !['otp', 'product', 'uri'].includes(parsed.type);
+  const display = (key: string, value: string) => {
+    if (key === 'hidden') return t('common.yes');
+    if (key === 'security') return SECURITY_LABEL[value] ? t(SECURITY_LABEL[value]) : value;
+    return value;
+  };
 
   return (
-    <article className="card" aria-labelledby={`res-${code.text.length}-${code.format}`}>
+    <article className="card result" aria-labelledby={headingId}>
       <div className="result-head">
         <span className="type-icon"><Icon name={TYPE_ICONS[parsed.type] ?? 'text'} size={22} /></span>
         <div>
-          <Heading id={`res-${code.text.length}-${code.format}`}>{t(`type.${parsed.type}` as Key)}</Heading>
-          <span className="muted small">{formatLabel(code.format)}{code.version ? ` · ${code.version}` : ''}{code.ecLevel ? ` · EC ${code.ecLevel}` : ''}</span>
+          <Heading id={headingId}>{t(`type.${parsed.type}`)}</Heading>
+          <span className="muted small">{formatLabel(code.format)}{code.version ? ` · Version ${code.version}` : ''}</span>
         </div>
-        {parsed.sensitive && <span className="badge badge-warn" style={{ marginLeft: 'auto' }}><Icon name="key" size={14} />{t('result.sensitive')}</span>}
+        {parsed.sensitive && <span className="badge badge-warn push-right"><Icon name="key" size={14} />{t('result.sensitive')}</span>}
       </div>
 
       {url && (parsed.type === 'url' || parsed.type === 'uri') && (
-        <div className="stack" style={{ marginBottom: 12 }}>
-          <div className="url-box">
-            {url.host ? highlightHost(url.href, url.host) : url.href}
-          </div>
-          {url.host && <p className="small">{t('warn.target', { host: url.host })}</p>}
+        <div className="stack result-block">
+          <div className="url-box">{url.host ? highlightHost(url.href, url.host) : url.href}</div>
+          {url.host && <p className="small">{t('warn.target', { host: url.domain })}</p>}
           {url.warnings.map((w) => (
             <Note key={w} tone={w === 'dangerousScheme' || w === 'userinfo' ? 'error' : 'warn'}>
-              {t(`warn.${w}` as Key, { host: url.host })}
+              {t(`warn.${w}`, { host: url.host })}
             </Note>
           ))}
         </div>
@@ -164,21 +178,23 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
       {parsed.type !== 'url' && parsed.type !== 'text' && parsed.fields.length > 0 && (
         <dl className="kv">
           {parsed.fields.map((f) => (
-            <div key={f.key} style={{ display: 'contents' }}>
-              <dt>{fieldLabel(f.key)}</dt>
-              <dd>{f.sensitive ? <Secret value={f.value} /> : f.key === 'hidden' ? t('common.yes') : f.value}</dd>
+            <div key={f.key} className="kv-row">
+              <dt>{t(`field.${f.key}` as Key)}</dt>
+              <dd>{f.sensitive ? <Secret value={f.value} /> : display(f.key, f.value)}</dd>
             </div>
           ))}
         </dl>
       )}
 
-      {parsed.type === 'text' && <p className="kv-text" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginBottom: 14 }}>{code.text}</p>}
+      {parsed.type === 'text' && <p className="result-text">{code.text}</p>}
 
-      <div className="stack" style={{ marginBottom: 14 }}>
+      <div className="stack result-block">
         {parsed.type === 'wifi' && <Note tone="info">{t('result.wifiHint')}</Note>}
         {parsed.type === 'epc' && <Note tone="info">{t('result.epcHint')}</Note>}
-        {parsed.type === 'otp' && <Note tone="warn">{t('result.otpHint')}</Note>}
+        {parsed.type === 'otp' && <Note tone="warn">{t('result.otpHint')} {t('result.notSaved')}</Note>}
         {parsed.type === 'uri' && <Note tone="info">{t('result.uriHint')}</Note>}
+        {parsed.type === 'phone' && /[*#]/.test(number) && <Note tone="warn">{t('result.ussdWarning')}</Note>}
+        {parsed.type === 'email' && get('bcc') && <Note tone="warn">{t('result.bccWarning')}</Note>}
       </div>
 
       <div className="actions">
@@ -190,19 +206,20 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
           </button>
         )}
         {canShare() && parsed.type !== 'otp' && (
-          <button type="button" className="btn" onClick={() => share({ text: code.text }).catch(() => notify('common.error', 'error', { message: 'share' }))}>
+          <button type="button" className="btn" onClick={() => share({ text: code.text }).catch(() => notify('common.shareFailed', 'error'))}>
             <Icon name="share" size={18} />
             {t('common.share')}
           </button>
         )}
-        {editable && (
+        {parsed.content && (
           <button type="button" className="btn" onClick={edit}>
             <Icon name="edit" size={18} />
             {t('result.editAsQr')}
           </button>
         )}
       </div>
-      {(parsed.type === 'url' || parsed.type === 'geo') && <p className="muted small" style={{ marginTop: 10 }}>{t('result.externalNote')}</p>}
+      {(parsed.type === 'url' || parsed.type === 'geo') && <p className="muted small result-note">{t('result.externalNote')}</p>}
+      {saved && <p className="muted small result-note">{t('result.savedHint')} <a href="#/history">{t('result.savedHintLink')}</a></p>}
 
       <details className="raw">
         <summary>{t('result.rawShow')} · {t('result.length', { count: [...code.text].length })}</summary>
@@ -214,13 +231,16 @@ export function ResultCard({ code, headingLevel = 2 }: { code: DecodedCode; head
 
 /** Emphasises the real host inside the full URL (phishing aid). */
 function highlightHost(href: string, host: string) {
-  const at = href.indexOf(host, href.indexOf('//') + 2);
-  if (at < 0) return href;
+  const authorityStart = href.indexOf('//') + 2;
+  const authorityEnd = href.indexOf('/', authorityStart) < 0 ? href.length : href.indexOf('/', authorityStart);
+  const at = href.lastIndexOf('@', authorityEnd);
+  const start = href.indexOf(host, Math.max(authorityStart, at + 1));
+  if (start < 0) return href;
   return (
     <>
-      {href.slice(0, at)}
+      {href.slice(0, start)}
       <strong>{host}</strong>
-      {href.slice(at + host.length)}
+      {href.slice(start + host.length)}
     </>
   );
 }
